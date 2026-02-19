@@ -149,9 +149,6 @@ const Trade = () => {
     .catch((error) => {
       console.warn("❌ Live API Failed! Status:", error.response?.status);
       console.warn("🔄 Smart Fallback: Checking if we already have data...");
-      
-      // The PERFECT FIX: If we already have live data (from the first React Strict Mode fetch), 
-      // DON'T overwrite it. If we have nothing, load the STATIC_COINS.
       setMarketList(prevList => prevList.length > 0 ? prevList : STATIC_COINS);
     });
   }, []);
@@ -212,11 +209,13 @@ const Trade = () => {
   const handleCoinClick = (coin) => {
     const symbol = coin.symbol.toUpperCase();
     
-    // Priority: 1) 1inch tokenList  2) KNOWN_ERC20 map  3) null address (non-ERC20)
-    const fromTokenList = tokenList.find(t => t.symbol.toUpperCase() === symbol);
+    // FIX 1: Give KNOWN_ERC20 top priority so ETH pulls the WETH address properly
     const fromKnown     = KNOWN_ERC20[symbol];
-    const resolved = fromTokenList 
-      ?? (fromKnown ? { symbol, ...fromKnown } : { symbol, address: null, decimals: 18 });
+    const fromTokenList = tokenList.find(t => t.symbol.toUpperCase() === symbol);
+    
+    const resolved = fromKnown 
+      ? { symbol, ...fromKnown } 
+      : (fromTokenList ? { symbol, ...fromTokenList } : { symbol, address: null, decimals: 18 });
       
     setSelectedCoin(resolved);
     setInputPrice(''); setInputAmount(''); setSellAmount('');
@@ -235,12 +234,19 @@ const Trade = () => {
   const buyTotal  = inputPrice && inputAmount ? (parseFloat(inputPrice) * parseFloat(inputAmount)).toFixed(2) : '0';
   const sellTotal = inputPrice && sellAmount  ? (parseFloat(inputPrice) * parseFloat(sellAmount)).toFixed(2)  : '0';
 
-  const askCount  = Math.min(asks.length, MAX_ROWS);
-  const askSlots  = Array.from({ length: MAX_ROWS }, (_, i) => {
-    const askIdx = i - (MAX_ROWS - askCount);
-    return askIdx >= 0 ? asks[askIdx] : null;
+  // FIX 2 & 3: Orderbook Display Logic
+  const askCount = Math.min(asks.length, MAX_ROWS);
+  const askSlots = Array.from({ length: MAX_ROWS }, (_, i) => {
+    const emptyCount = MAX_ROWS - askCount;
+    if (i < emptyCount) return null; // These create the "space at the top" to align asks to the bottom
+    
+    // Reverses the index so the lowest price is physically at the bottom of the list!
+    const askIdx = MAX_ROWS - 1 - i; 
+    return asks[askIdx];
   });
+  
   const bidSlots = Array.from({ length: MAX_ROWS }, (_, i) => bids[i] ?? null);
+  
   const noAddress  = !selectedCoin.address || selectedCoin.symbol === 'USDT';
   const isEmpty    = !loadingBook && !noAddress && asks.length === 0 && bids.length === 0;
 
