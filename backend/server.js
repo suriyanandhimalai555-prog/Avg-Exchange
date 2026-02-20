@@ -15,7 +15,8 @@ app.use(cors({
   origin: [
     'http://localhost:5173',
     'https://avg-exchange.vercel.app',
-    'https://www.avgexchange.io/'
+    'https://www.avgexchange.io',
+    'https://avgexchange.io' 
   ],
   credentials: true
 }));
