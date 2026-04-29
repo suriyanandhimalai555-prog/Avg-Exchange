@@ -1,13 +1,12 @@
-// backend/routes/oneInchRoutes.js
 const express = require('express');
 const axios = require('axios');
 const router = express.Router();
 
-const API_KEY = process.env.ONE_INCH_API_KEY;
+const SUPPORTED_CHAIN_IDS = new Set([1, 56, 137, 42161, 10, 8453, 43114]);
 
 const getHeaders = () => ({
-  Authorization: `Bearer ${API_KEY}`,
-  'Content-Type': 'application/json'
+  Authorization: `Bearer ${process.env.ONE_INCH_API_KEY}`,
+  'Content-Type': 'application/json',
 });
 
 const forwardRequest = async (res, method, url, config = {}) => {
@@ -16,18 +15,23 @@ const forwardRequest = async (res, method, url, config = {}) => {
     res.status(200).json(response.data);
   } catch (error) {
     console.error(`1inch API Error [${url}]:`, error.response?.data || error.message);
-    res.status(error.response?.status || 500).json({ 
-      message: "1inch API Request Failed",
-      details: error.response?.data
+    res.status(error.response?.status || 500).json({
+      message: '1inch API request failed',
+      details: error.response?.data,
     });
   }
 };
 
-// 1. TOKENS (Fixed: Defaults chainId to 1)
+const parseChainId = (raw, fallback = 1) => {
+  const id = parseInt(raw, 10);
+  return SUPPORTED_CHAIN_IDS.has(id) ? id : fallback;
+};
+
+// GET /api/1inch/tokens?chainId=1
 router.get('/tokens', async (req, res) => {
-  const { chainId = 1 } = req.query; 
+  const chainId = parseChainId(req.query.chainId);
   const url = `https://api.1inch.dev/token/v1.2/${chainId}`;
-  
+
   try {
     const response = await axios.get(url, { headers: getHeaders() });
     const tokenList = Object.values(response.data).map(t => ({
@@ -35,36 +39,45 @@ router.get('/tokens', async (req, res) => {
       name: t.name,
       address: t.address,
       decimals: t.decimals,
-      logoURI: t.logoURI
+      logoURI: t.logoURI,
     }));
     res.status(200).json(tokenList);
   } catch (error) {
-    console.error("Token Fetch Error:", error.message);
-    res.status(500).json({ message: "Failed to fetch tokens" });
+    console.error('1inch Token Fetch Error:', error.message);
+    res.status(500).json({ message: 'Failed to fetch tokens' });
   }
 });
 
-// 2. SWAP
-router.get('/swap/quote', async (req, res) => {
-  const { chainId = 1, src, dst, amount } = req.query;
+// GET /api/1inch/swap/quote?chainId=1&src=&dst=&amount=
+router.get('/swap/quote', (req, res) => {
+  const { src, dst, amount } = req.query;
+  if (!src || !dst || !amount) {
+    return res.status(400).json({ message: 'src, dst, and amount are required' });
+  }
+  const chainId = parseChainId(req.query.chainId);
   const url = `https://api.1inch.dev/swap/v6.0/${chainId}/quote`;
-  await forwardRequest(res, 'get', url, { headers: getHeaders(), params: { src, dst, amount } });
+  forwardRequest(res, 'get', url, { headers: getHeaders(), params: { src, dst, amount } });
 });
 
-router.get('/swap/build', async (req, res) => {
-  const { chainId = 1, src, dst, amount, from, slippage } = req.query;
+// GET /api/1inch/swap/build?chainId=1&src=&dst=&amount=&from=&slippage=
+router.get('/swap/build', (req, res) => {
+  const { src, dst, amount, from, slippage } = req.query;
+  if (!src || !dst || !amount || !from) {
+    return res.status(400).json({ message: 'src, dst, amount, and from are required' });
+  }
+  const chainId = parseChainId(req.query.chainId);
   const url = `https://api.1inch.dev/swap/v6.0/${chainId}/swap`;
-  await forwardRequest(res, 'get', url, { headers: getHeaders(), params: { src, dst, amount, from, slippage } });
+  forwardRequest(res, 'get', url, {
+    headers: getHeaders(),
+    params: { src, dst, amount, from, slippage: slippage || 1 },
+  });
 });
 
-// 3. ORDERBOOK (Fixed: Defaults chainId to 1)
-router.get('/orderbook/:chainId', async (req, res) => {
-  let { chainId } = req.params;
-  // If chainId is missing or string 'undefined', force it to 1
-  if (!chainId || chainId === 'undefined') chainId = 1;
-
+// GET /api/1inch/orderbook/:chainId
+router.get('/orderbook/:chainId', (req, res) => {
+  const chainId = parseChainId(req.params.chainId);
   const url = `https://api.1inch.dev/orderbook/v4.1/${chainId}/all`;
-  await forwardRequest(res, 'get', url, { headers: getHeaders(), params: req.query });
+  forwardRequest(res, 'get', url, { headers: getHeaders(), params: req.query });
 });
 
 module.exports = router;

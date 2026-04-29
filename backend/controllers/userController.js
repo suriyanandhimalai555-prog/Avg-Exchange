@@ -9,9 +9,13 @@ const createToken = (id, expiresIn) => {
   return jwt.sign({ id }, process.env.SECRET, { expiresIn });
 };
 
-// Helper: Generate a random referral code (e.g., "AVG-X7Z9")
+// Helper: Generate a unique referral code — prefix 'MAX' + 6 random uppercase alphanumeric chars
+// e.g. "MAX8F2A9B"
 const generateReferralCode = () => {
-  return 'AVG-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const bytes = crypto.randomBytes(6);
+  const suffix = Array.from(bytes).map(b => CHARS[b % CHARS.length]).join('');
+  return 'MAX' + suffix;
 };
 
 const signupUser = async (req, res, next) => {

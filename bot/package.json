@@ -1,0 +1,17 @@
+{
+  "name": "avg-market-maker-bot",
+  "version": "1.0.0",
+  "description": "Market maker bot for AVG Exchange",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "dotenv": "^16.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

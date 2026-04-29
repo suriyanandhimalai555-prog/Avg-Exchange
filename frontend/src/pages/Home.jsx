@@ -2,6 +2,7 @@
 import React from 'react';
 import { useSelector } from 'react-redux';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { 
   heroStyles, 
   statsStyles, 
@@ -14,6 +15,7 @@ import heroVideo from '../assets/Droneshot.mp4';
 
 const Home = () => {
   const user = useSelector((state) => state.auth.user);
+  const navigate = useNavigate();
 
   return (
     <div className="bg-[#0b0c0e] min-h-screen selection:bg-[#00D68F] selection:text-black">
@@ -31,8 +33,8 @@ const Home = () => {
         <motion.div 
           className={heroStyles.content}
           initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }} // Changed from animate to whileInView
-          viewport={{ once: false, amount: 0.3 }} // Added viewport prop
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: false, amount: 0.3 }}
           transition={{ duration: 0.8, ease: "easeOut" }}
         >
           <h1 className={heroStyles.title}>
@@ -47,10 +49,16 @@ const Home = () => {
           </p>
 
           <div className={heroStyles.ctaGroup}>
-            <button className={heroStyles.ctaPrimary}>
+            <button
+              className={heroStyles.ctaPrimary}
+              onClick={() => navigate('/trade')}
+            >
               Start Trading Now
             </button>
-            <button className={heroStyles.ctaSecondary}>
+            <button
+              className={heroStyles.ctaSecondary}
+              onClick={() => navigate('/markets')}
+            >
               Explore Markets
             </button>
           </div>
@@ -108,8 +116,18 @@ const Home = () => {
             </p>
             
             <div className={ctaStyles.buttonGroup}>
-              <button className={ctaStyles.primaryBtn}>Create Account</button>
-              <button className={ctaStyles.secondaryBtn}>View Exchange</button>
+              <button
+                className={ctaStyles.primaryBtn}
+                onClick={() => navigate('/signup')}
+              >
+                Create Account
+              </button>
+              <button
+                className={ctaStyles.secondaryBtn}
+                onClick={() => navigate('/markets')}
+              >
+                View Exchange
+              </button>
             </div>
           </div>
         </motion.div>

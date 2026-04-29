@@ -5,7 +5,9 @@ import Home from './pages/Home';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Markets from './pages/Markets'; 
-import Trade from './pages/Trade'; // <--- Import Trade
+import Trade from './pages/Trade'; 
+import Account from './pages/Account';
+import Wallet from './pages/Wallet';
 import Navbar from './components/Navbar';
 import ScrollToTop from './components/ScrollToTop';
 import Footer from './components/Footer';
@@ -23,9 +25,16 @@ function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/markets" element={<Markets />} />
-            
-            {/* New Trade Route */}
             <Route path="/trade" element={<Trade />} /> 
+            
+            <Route
+              path="/wallet"
+              element={user ? <Wallet /> : <Navigate to="/login" />}
+            />
+            <Route
+              path="/account"
+              element={user ? <Account /> : <Navigate to="/login" />}
+            />
             
             <Route 
               path="/login" 

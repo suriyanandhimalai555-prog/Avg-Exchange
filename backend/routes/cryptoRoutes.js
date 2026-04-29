@@ -1,27 +1,42 @@
-// backend/routes/cryptoRoutes.js
 const express = require('express');
-const axios = require('axios');
-const router = express.Router();
+const axios   = require('axios');
+const router  = express.Router();
 
-// Route to fetch Top 50 Cryptos in INR from CoinMarketCap
+const CACHE_TTL_MS = 60_000; // 60 seconds
+const cache = new Map(); // key → { data, fetchedAt }
+
+// GET /api/crypto/listings — Top cryptos via CoinMarketCap (cached)
 router.get('/listings', async (req, res) => {
+  const { convert = 'INR', limit = 50 } = req.query;
+  const safeLimit = Math.min(parseInt(limit, 10) || 50, 200);
+  const key = `${convert}|${safeLimit}`;
+  const now = Date.now();
+
+  const hit = cache.get(key);
+  if (hit && now - hit.fetchedAt < CACHE_TTL_MS) {
+    res.set('X-Cache', 'HIT');
+    return res.json(hit.data);
+  }
+
   try {
-    const response = await axios.get('https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest', {
-      params: {
-        start: 1,
-        limit: 50,
-        convert: 'INR'
-      },
-      headers: {
-        'X-CMC_PRO_API_KEY': process.env.COINMARKETCAP_API // Using provided key
+    const { data: body } = await axios.get(
+      'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest',
+      {
+        params:  { start: 1, limit: safeLimit, convert },
+        headers: { 'X-CMC_PRO_API_KEY': process.env.COINMARKETCAP_API },
+        timeout: 8_000,
       }
-    });
-    
-    // Return the 'data' array from the CMC response
-    res.json(response.data.data);
-  } catch (error) {
-    console.error("CMC API Error:", error.response?.data || error.message);
-    res.status(500).json({ message: "Failed to fetch crypto listings" });
+    );
+    cache.set(key, { data: body.data, fetchedAt: now });
+    res.set('X-Cache', 'MISS');
+    return res.json(body.data);
+  } catch (err) {
+    if (hit) {
+      res.set('X-Cache', 'STALE');
+      return res.json(hit.data);
+    }
+    const status = err.response?.status ?? 500;
+    return res.status(status).json({ error: 'Failed to fetch crypto listings' });
   }
 });
 
