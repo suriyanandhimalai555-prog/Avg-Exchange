@@ -15,6 +15,7 @@ const tradeRoutes = require('./routes/tradeRoutes');
 const kycRoutes   = require('./routes/kycRoutes');
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // ── CORS ─────────────────────────────────────────────────────
