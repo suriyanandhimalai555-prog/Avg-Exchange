@@ -62,7 +62,7 @@ const signupUser = async (req, res, next) => {
     // Default 3 days for new signup
     const token = createToken(user.id, '3d');
     
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 3 * 24 * 60 * 60 * 1000 });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 3 * 24 * 60 * 60 * 1000 });
     
     res.status(200).json({ email, name: user.name, referralCode: user.referral_code });
 
@@ -94,7 +94,7 @@ const loginUser = async (req, res, next) => {
     const token = createToken(user.id, expiresIn);
 
     // 3. Set cookie with calculated maxAge
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'Lax', maxAge });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge });
     
     res.status(200).json({ email, name: user.name, referralCode: user.referral_code });
   } catch (error) {
