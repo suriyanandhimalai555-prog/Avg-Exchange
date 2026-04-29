@@ -470,7 +470,7 @@ const Trade = () => {
               const sym        = coin.symbol.toUpperCase();
               const isSelected = selectedCoin.symbol === sym;
               const positive   = (coin.price_change_percentage_24h ?? 0) >= 0;
-
+ 
               return (
                 <div
                   key={coin.id}
