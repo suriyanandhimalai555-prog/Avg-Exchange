@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { logout } from '../features/authSlice';
+import { fetchNavbarBalance, clearBalance } from '../features/balanceSlice';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   IoMenu, IoClose, IoSearchOutline, IoGlobeOutline,
@@ -38,14 +39,24 @@ const Navbar = () => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('exchange');
   const [copied, setCopied] = useState(false);
-  
+
   const user = useSelector((state) => state.auth.user);
+  const totalBalance = useSelector((state) => state.balance.totalUSD);
   const dispatch = useDispatch();
   const navigate = useNavigate();
   const dropdownRef = useRef(null);
 
   // Helper to get display name (Name -> Email)
   const displayName = user ? (user.name || user.email) : '';
+
+  // Load balance on login; clear on logout
+  useEffect(() => {
+    if (user) {
+      dispatch(fetchNavbarBalance());
+    } else {
+      dispatch(clearBalance());
+    }
+  }, [user, dispatch]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -126,8 +137,22 @@ const Navbar = () => {
                 <Link to="/signup" className={s.signUpBtn}>Sign Up</Link>
               </div>
             ) : (
-              <div className={s.userDropdownGroup} ref={dropdownRef}>
-                {/* Trigger */}
+              <div className="flex items-center gap-4">
+                {/* Desktop Wallet Widget */}
+                {totalBalance !== null && (
+                  <div 
+                    onClick={() => navigate('/wallet')}
+                    className="flex items-center gap-2 cursor-pointer bg-[#181a20] hover:bg-white/[0.05] px-3 py-1.5 rounded-lg border border-white/[0.05] transition-all"
+                    title="Open Wallet"
+                  >
+                    <IoWalletOutline className="text-[#00D68F]" size={18} />
+                    <span className="text-sm font-bold text-white font-mono mt-0.5">
+                      ${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                )}
+                <div className={s.userDropdownGroup} ref={dropdownRef}>
+                  {/* Trigger */}
                 <div 
                   className={s.userDropdownTrigger} 
                   onClick={() => setIsDropdownOpen(!isDropdownOpen)}
@@ -195,16 +220,33 @@ const Navbar = () => {
                     </motion.div>
                   )}
                 </AnimatePresence>
+                </div>
               </div>
             )}
             
             <button className={s.iconBtn}><IoGlobeOutline size={20} /></button>
           </div>
 
-          {/* --- MOBILE HAMBURGER TOGGLE --- */}
-          <button className={s.mobileToggle} onClick={() => setIsOpen(!isOpen)}>
-            {isOpen ? <IoClose /> : <IoMenu />}
-          </button>
+          {/* --- MOBILE CONTROLS (< XL) --- */}
+          <div className="flex xl:hidden items-center gap-2">
+            {/* Mobile Small Wallet Widget (< MD) */}
+            {user && totalBalance !== null && (
+              <div 
+                onClick={() => handleNav('/wallet')}
+                className="md:hidden flex items-center gap-1.5 cursor-pointer bg-[#181a20] px-2.5 py-1 rounded-md border border-white/[0.05]"
+              >
+                <IoWalletOutline className="text-[#00D68F]" size={14} />
+                <span className="text-xs font-bold text-white font-mono mt-[1px]">
+                  ${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                </span>
+              </div>
+            )}
+
+            {/* --- MOBILE HAMBURGER TOGGLE --- */}
+            <button className={s.mobileToggle} onClick={() => setIsOpen(!isOpen)}>
+              {isOpen ? <IoClose /> : <IoMenu />}
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -243,6 +285,22 @@ const Navbar = () => {
                         <span className={s.mobileStatus}>Verified User</span>
                       </div>
                     </div>
+
+                    {/* Mobile Wallet Balance */}
+                    {totalBalance !== null && (
+                      <div 
+                        onClick={() => handleNav('/wallet')}
+                        className="flex items-center justify-between bg-black/40 border border-white/[0.05] rounded-lg p-3 mt-4 active:bg-black/60 transition-colors cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <IoWalletOutline className="text-[#00D68F]" size={20} />
+                          <span className="text-sm text-gray-300 font-medium">Est. Balance</span>
+                        </div>
+                        <span className="text-[#00D68F] font-mono font-bold text-sm">
+                          ${totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Mobile Referral Box */}
                     <div className={s.mobileReferralBox} onClick={copyToClipboard}>

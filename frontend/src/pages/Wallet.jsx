@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
+import { fetchNavbarBalance } from '../features/balanceSlice';
 import axios from 'axios';
 import { io } from 'socket.io-client';
 import {
@@ -28,6 +29,7 @@ const TABS = ['Assets', 'Open Orders', 'Trade History'];
 
 const Wallet = () => {
   const { user } = useSelector((s) => s.auth);
+  const dispatch = useDispatch();
   const navigate = useNavigate();
 
   const [activeTab,   setActiveTab]   = useState('Assets');
@@ -112,6 +114,7 @@ const Wallet = () => {
       });
       setDepositAmount('');
       fetchAll();
+      dispatch(fetchNavbarBalance());
     } catch (err) {
       setDepositFeedback({ type: 'error', message: err.response?.data?.error || 'Deposit failed' });
     } finally {

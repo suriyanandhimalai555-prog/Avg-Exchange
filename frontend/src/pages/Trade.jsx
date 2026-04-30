@@ -2,7 +2,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { IoSearch, IoRefreshOutline } from 'react-icons/io5';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
+import { fetchNavbarBalance } from '../features/balanceSlice';
 import { Link } from 'react-router-dom';
 import API_URL from '../config/api';
 import TradingViewChart from '../components/TradingViewChart';
@@ -42,6 +43,7 @@ const ObRow = ({ o, side }) => {
 // --- MAIN COMPONENT ---
 const Trade = () => {
   const { user } = useSelector((state) => state.auth);
+  const dispatch = useDispatch();
 
   const [selectedCoin, setSelectedCoin] = useState({ symbol: 'BTC' });
   const [marketList,   setMarketList]   = useState([]);
@@ -154,6 +156,7 @@ const Trade = () => {
       });
       setInputAmount(''); setSellAmount(''); setInputPrice('');
       fetchBalances();
+      dispatch(fetchNavbarBalance());
     } catch (err) {
       setOrderFeedback({ type: 'error', message: err.response?.data?.error || 'Order failed' });
     } finally {
