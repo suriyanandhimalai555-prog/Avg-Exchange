@@ -7,6 +7,7 @@ import {
   IoTimeOutline,
   IoCheckmarkCircle,
   IoCloseCircle,
+  IoLockClosedOutline,
 } from 'react-icons/io5';
 import API_URL from '../config/api';
 
@@ -23,6 +24,14 @@ const Account = () => {
   const [documentType,   setDocumentType]   = useState('passport');
   const [documentNumber, setDocumentNumber] = useState('');
   const [file,           setFile]           = useState(null);
+
+  // Change-password state
+  const [pwCurrent,  setPwCurrent]  = useState('');
+  const [pwNew,      setPwNew]      = useState('');
+  const [pwConfirm,  setPwConfirm]  = useState('');
+  const [pwLoading,  setPwLoading]  = useState(false);
+  const [pwError,    setPwError]    = useState('');
+  const [pwSuccess,  setPwSuccess]  = useState(false);
 
   // Load existing KYC status on mount
   useEffect(() => {
@@ -62,6 +71,25 @@ const Account = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPwError(''); setPwSuccess(false);
+    if (pwNew !== pwConfirm) { setPwError('New passwords do not match'); return; }
+    setPwLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/user/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ currentPassword: pwCurrent, newPassword: pwNew }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setPwError(data.error || 'Failed to change password'); }
+      else { setPwSuccess(true); setPwCurrent(''); setPwNew(''); setPwConfirm(''); }
+    } catch { setPwError('Network error. Please try again.'); }
+    finally { setPwLoading(false); }
   };
 
   if (kycStatus === 'loading') {
@@ -235,6 +263,71 @@ const Account = () => {
 
         </div>
       </div>
+
+      {/* ── Change Password ── */}
+      <div className="w-full max-w-3xl mt-6 bg-[#181a20] rounded-2xl border border-white/[0.08] shadow-2xl overflow-hidden">
+        <div className="p-6 md:p-8">
+          <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+            <IoLockClosedOutline className="text-[#00D68F]" />
+            Change Password
+          </h2>
+
+          {pwError && (
+            <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">{pwError}</div>
+          )}
+          {pwSuccess && (
+            <div className="mb-4 px-4 py-3 bg-[#00D68F]/10 border border-[#00D68F]/20 rounded-lg text-[#00D68F] text-sm font-semibold">
+              Password changed successfully.
+            </div>
+          )}
+
+          <form onSubmit={handleChangePassword} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <label className="text-sm font-semibold text-gray-300">Current Password</label>
+              <input
+                type="password"
+                required
+                value={pwCurrent}
+                onChange={e => setPwCurrent(e.target.value)}
+                placeholder="Enter current password"
+                className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
+              />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-semibold text-gray-300">New Password</label>
+                <input
+                  type="password"
+                  required
+                  value={pwNew}
+                  onChange={e => setPwNew(e.target.value)}
+                  placeholder="Min 8 chars, uppercase, number, symbol"
+                  className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
+                />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-semibold text-gray-300">Confirm New Password</label>
+                <input
+                  type="password"
+                  required
+                  value={pwConfirm}
+                  onChange={e => setPwConfirm(e.target.value)}
+                  placeholder="Repeat new password"
+                  className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={pwLoading}
+              className="mt-2 bg-[#00D68F] text-black font-bold text-base py-3 rounded-xl hover:bg-[#00bd7e] disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
+            >
+              {pwLoading ? 'Updating…' : 'Update Password'}
+            </button>
+          </form>
+        </div>
+      </div>
+
     </div>
   );
 };

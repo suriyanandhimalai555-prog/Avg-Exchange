@@ -112,17 +112,20 @@ class OrderManager {
    * @param {number} midPrice  current market price
    */
   async placeGrid(midPrice) {
-    const { BOT_SPREAD_PCT, BOT_LEVELS, BOT_LEVEL_STEP_PCT, BOT_ORDER_SIZE } = config;
+    const { BOT_SPREAD_PCT, BOT_LEVELS, BOT_LEVEL_STEP_PCT, BOT_ORDER_VALUE_USD } = config;
+
+    // Derive coin quantity from target USD value so orders are always meaningful
+    // regardless of the coin price (e.g. $10 = 91 DOGE at $0.11, or 0.0001 BTC at $95k)
+    const orderSize = BOT_ORDER_VALUE_USD / midPrice;
 
     for (let i = 0; i < BOT_LEVELS; i++) {
-      // Each level is spread + (i * step) % away from mid
       const offset = (BOT_SPREAD_PCT + i * BOT_LEVEL_STEP_PCT) / 100;
 
       const buyPrice  = midPrice * (1 - offset);
       const sellPrice = midPrice * (1 + offset);
 
-      await this.place('buy',  buyPrice,  BOT_ORDER_SIZE);
-      await this.place('sell', sellPrice, BOT_ORDER_SIZE);
+      await this.place('buy',  buyPrice,  orderSize);
+      await this.place('sell', sellPrice, orderSize);
     }
   }
 

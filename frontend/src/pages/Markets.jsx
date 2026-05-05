@@ -2,7 +2,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
 import { marketStyles as s } from '../components/MarketStyles';
-import API_URL from '../config/api'; // <--- FIXED IMPORT
+import API_URL from '../config/api';
 import { IoStatsChart, IoSearch, IoTrendingUp, IoTrendingDown } from 'react-icons/io5';
 
 const Markets = () => {
@@ -15,8 +15,9 @@ const Markets = () => {
   useEffect(() => {
     const fetchCryptos = async () => {
       try {
-        // <--- FIXED API CALL
-        const { data } = await axios.get(`${API_URL}/api/crypto/listings`);
+        const { data } = await axios.get(`${API_URL}/api/markets`, {
+          params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
+        });
         setCryptos(data);
         setLoading(false);
       } catch (err) {
@@ -32,54 +33,52 @@ const Markets = () => {
   // Calculate market stats
   const marketStats = useMemo(() => {
     if (!cryptos.length) return { totalMarketCap: 0, totalVolume: 0, gainers: 0, losers: 0 };
-    
-    const totalMarketCap = cryptos.reduce((sum, coin) => sum + (coin.quote.INR.market_cap || 0), 0);
-    const totalVolume = cryptos.reduce((sum, coin) => sum + (coin.quote.INR.volume_24h || 0), 0);
-    const gainers = cryptos.filter(coin => coin.quote.INR.percent_change_24h > 0).length;
-    const losers = cryptos.filter(coin => coin.quote.INR.percent_change_24h < 0).length;
-    
+
+    const totalMarketCap = cryptos.reduce((sum, coin) => sum + (coin.market_cap || 0), 0);
+    const totalVolume = cryptos.reduce((sum, coin) => sum + (coin.total_volume || 0), 0);
+    const gainers = cryptos.filter(coin => (coin.price_change_percentage_24h ?? 0) > 0).length;
+    const losers = cryptos.filter(coin => (coin.price_change_percentage_24h ?? 0) < 0).length;
+
     return { totalMarketCap, totalVolume, gainers, losers };
   }, [cryptos]);
 
   // Filter and search
   const filteredCryptos = useMemo(() => {
     let filtered = [...cryptos];
-    
-    // Apply search
+
     if (searchTerm) {
-      filtered = filtered.filter(coin => 
+      filtered = filtered.filter(coin =>
         coin.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         coin.symbol.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    
-    // Apply filter
+
     if (filter === 'gainers') {
-      filtered = filtered.filter(coin => coin.quote.INR.percent_change_24h > 0);
-      filtered.sort((a, b) => b.quote.INR.percent_change_24h - a.quote.INR.percent_change_24h);
+      filtered = filtered.filter(coin => (coin.price_change_percentage_24h ?? 0) > 0);
+      filtered.sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h);
     } else if (filter === 'losers') {
-      filtered = filtered.filter(coin => coin.quote.INR.percent_change_24h < 0);
-      filtered.sort((a, b) => a.quote.INR.percent_change_24h - b.quote.INR.percent_change_24h);
+      filtered = filtered.filter(coin => (coin.price_change_percentage_24h ?? 0) < 0);
+      filtered.sort((a, b) => a.price_change_percentage_24h - b.price_change_percentage_24h);
     }
-    
+
     return filtered;
   }, [cryptos, searchTerm, filter]);
 
-  const formatINR = (num) => {
-    return new Intl.NumberFormat('en-IN', {
+  const formatUSD = (num) => {
+    return new Intl.NumberFormat('en-US', {
       style: 'currency',
-      currency: 'INR',
+      currency: 'USD',
       maximumFractionDigits: 2,
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
     }).format(num);
   };
 
   const formatCompact = (num) => {
-    if (num >= 1e12) return `₹${(num / 1e12).toFixed(2)}T`;
-    if (num >= 1e9) return `₹${(num / 1e9).toFixed(2)}B`;
-    if (num >= 1e6) return `₹${(num / 1e6).toFixed(2)}M`;
-    if (num >= 1e3) return `₹${(num / 1e3).toFixed(2)}K`;
-    return `₹${num.toFixed(2)}`;
+    if (num >= 1e12) return `$${(num / 1e12).toFixed(2)}T`;
+    if (num >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
+    if (num >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
+    if (num >= 1e3) return `$${(num / 1e3).toFixed(2)}K`;
+    return `$${num.toFixed(2)}`;
   };
 
   const formatNumber = (num) => {
@@ -91,7 +90,7 @@ const Markets = () => {
       <div className={s.section}>
         <div className={s.glowTop} />
         <div className={s.glowBottom} />
-        
+
         <div className={s.container}>
           {/* Page Header */}
           <div className={s.header}>
@@ -102,7 +101,7 @@ const Markets = () => {
               <h1 className={s.title}>Live Crypto Markets</h1>
             </div>
             <p className={s.subtitle}>
-              Track top 50 cryptocurrencies by market cap. Real-time prices, 24h changes, volume, and supply data in INR.
+              Track top 50 cryptocurrencies by market cap. Real-time prices, 24h changes, volume, and supply data in USD.
             </p>
           </div>
 
@@ -145,7 +144,7 @@ const Markets = () => {
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
-              
+
               <div className={s.filterGroup}>
                 <button
                   onClick={() => setFilter('all')}
@@ -199,32 +198,31 @@ const Markets = () => {
                     </tr>
                   </thead>
                   <tbody className={s.tbody}>
-                    {filteredCryptos.map((coin) => {
-                      const quote = coin.quote.INR;
-                      const change = quote.percent_change_24h;
+                    {filteredCryptos.map((coin, idx) => {
+                      const change = coin.price_change_percentage_24h ?? 0;
                       const changeClass = change > 0 ? s.positive : change < 0 ? s.negative : s.neutral;
 
                       return (
                         <tr key={coin.id} className={s.tr}>
                           <td className={`${s.td} pl-6 w-12`}>
-                            <span className={s.rank}>{coin.cmc_rank}</span>
+                            <span className={s.rank}>{idx + 1}</span>
                           </td>
                           <td className={s.td}>
                             <div className={s.coinInfo}>
-                              <img 
-                                src={`https://s2.coinmarketcap.com/static/img/coins/64x64/${coin.id}.png`}
+                              <img
+                                src={coin.image}
                                 alt={coin.name}
                                 className={s.coinIcon}
                                 loading="lazy"
                               />
                               <div className={s.coinText}>
                                 <div className={s.name}>{coin.name}</div>
-                                <div className={s.symbol}>{coin.symbol}</div>
+                                <div className={s.symbol}>{coin.symbol.toUpperCase()}</div>
                               </div>
                             </div>
                           </td>
                           <td className={`${s.td} text-right`}>
-                            <div className={s.price}>{formatINR(quote.price)}</div>
+                            <div className={s.price}>{formatUSD(coin.current_price)}</div>
                           </td>
                           <td className={`${s.td} text-right`}>
                             <div className={`${s.changeWrapper} ${changeClass} justify-end`}>
@@ -235,15 +233,15 @@ const Markets = () => {
                             </div>
                           </td>
                           <td className={`${s.td} text-right`}>
-                            <div className={s.marketCap}>{formatCompact(quote.market_cap)}</div>
+                            <div className={s.marketCap}>{formatCompact(coin.market_cap)}</div>
                           </td>
                           <td className={`${s.td} text-right`}>
-                            <div className={s.volume}>{formatCompact(quote.volume_24h)}</div>
+                            <div className={s.volume}>{formatCompact(coin.total_volume)}</div>
                           </td>
                           <td className={`${s.td} text-right pr-6`}>
                             <div className={s.supply}>
                               {formatNumber(coin.circulating_supply)}
-                              <span className={s.supplySymbol}>{coin.symbol}</span>
+                              <span className={s.supplySymbol}>{coin.symbol.toUpperCase()}</span>
                             </div>
                           </td>
                         </tr>
@@ -256,27 +254,26 @@ const Markets = () => {
               {/* Mobile Card View */}
               <div className={s.mobileContainer}>
                 {filteredCryptos.map((coin) => {
-                  const quote = coin.quote.INR;
-                  const change = quote.percent_change_24h;
+                  const change = coin.price_change_percentage_24h ?? 0;
                   const changeClass = change > 0 ? s.positive : change < 0 ? s.negative : s.neutral;
 
                   return (
                     <div key={coin.id} className={s.mobileCard}>
                       <div className={s.mobileCardHeader}>
                         <div className={s.coinInfo}>
-                          <img 
-                            src={`https://s2.coinmarketcap.com/static/img/coins/64x64/${coin.id}.png`}
+                          <img
+                            src={coin.image}
                             alt={coin.name}
                             className={s.coinIcon}
                             loading="lazy"
                           />
                           <div className={s.coinText}>
                             <div className={s.name}>{coin.name}</div>
-                            <div className={s.symbol}>{coin.symbol}</div>
+                            <div className={s.symbol}>{coin.symbol.toUpperCase()}</div>
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className={s.price}>{formatINR(quote.price)}</div>
+                          <div className={s.price}>{formatUSD(coin.current_price)}</div>
                           <div className={`${s.changeWrapper} ${changeClass} justify-end mt-1`}>
                             <span className={s.changeIcon}>
                               {change > 0 ? '▲' : change < 0 ? '▼' : '●'}
@@ -285,15 +282,15 @@ const Markets = () => {
                           </div>
                         </div>
                       </div>
-                      
+
                       <div className={s.mobileCardBody}>
                         <div className={s.mobileRow}>
                           <span className={s.mobileLabel}>M.Cap</span>
-                          <span className={s.mobileValue}>{formatCompact(quote.market_cap)}</span>
+                          <span className={s.mobileValue}>{formatCompact(coin.market_cap)}</span>
                         </div>
                         <div className={s.mobileRow}>
                           <span className={s.mobileLabel}>Vol(24h)</span>
-                          <span className={s.mobileValue}>{formatCompact(quote.volume_24h)}</span>
+                          <span className={s.mobileValue}>{formatCompact(coin.total_volume)}</span>
                         </div>
                       </div>
                     </div>

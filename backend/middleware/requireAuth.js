@@ -10,7 +10,7 @@ const requireAuth = async (req, res, next) => {
 
   try {
     const { id } = jwt.verify(token, process.env.SECRET);
-    const result = await db.query('SELECT id, email FROM "User" WHERE id = $1', [id]);
+    const result = await db.query('SELECT id, email, is_admin FROM "User" WHERE id = $1', [id]);
     req.user = result.rows[0];
 
     if (!req.user) {

@@ -75,6 +75,17 @@ module.exports = (io) => {
       return res.status(400).json({ error: 'Pair must be in format SYMBOL/USDT (e.g. BTC/USDT)' });
     }
 
+    // ── KYC gate (skipped for admin/bot accounts) ─────────────
+    if (!req.user.is_admin) {
+      const kycRow = await db.query(
+        `SELECT status FROM kyc_submissions WHERE user_id = $1`,
+        [req.user.id]
+      );
+      if (!kycRow.rows.length || kycRow.rows[0].status !== 'approved') {
+        return res.status(403).json({ error: 'KYC verification required to trade. Please complete your KYC in Account settings.' });
+      }
+    }
+
     let numPrice      = parseFloat(price);
     const numQuantity = parseFloat(quantity);
     if (isNaN(numQuantity) || numQuantity <= 0) return res.status(400).json({ error: 'quantity must be a positive number' });

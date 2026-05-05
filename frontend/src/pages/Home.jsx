@@ -3,11 +3,7 @@ import React from 'react';
 import { useSelector } from 'react-redux';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { 
-  heroStyles, 
-  statsStyles, 
-  ctaStyles 
-} from '../components/HomeStyles';
+import { heroStyles, ctaStyles } from '../components/HomeStyles';
 import TrendingSection from '../components/TrendingSection';
 import FeaturesSection from '../components/FeaturesSection';
 import StepsSection from '../components/StepsSection'; 
@@ -64,18 +60,6 @@ const Home = () => {
           </div>
         </motion.div>
       </section>
-
-      {/* --- STATS BAR --- */}
-      <div className={statsStyles.section}>
-        <div className={statsStyles.container}>
-          <div className={statsStyles.grid}>
-            <StatItem value="$48 Billion" label="Quarterly Volume" />
-            <StatItem value="100+" label="Countries Supported" />
-            <StatItem value="10 Million+" label="Verified Users" />
-            <StatItem value="<0.10%" label="Lowest Fees" />
-          </div>
-        </div>
-      </div>
 
       {/* --- TRENDING MARKETS --- */}
       {/* <TrendingSection /> */}
@@ -136,12 +120,5 @@ const Home = () => {
     </div>
   );
 };
-
-const StatItem = ({ value, label }) => (
-  <div className={statsStyles.item}>
-    <div className={statsStyles.value}>{value}</div>
-    <div className={statsStyles.label}>{label}</div>
-  </div>
-);
 
 export default Home;

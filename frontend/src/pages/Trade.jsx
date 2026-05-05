@@ -40,6 +40,17 @@ const ObRow = ({ o, side }) => {
   );
 };
 
+// Max recent trades to keep in memory
+const MAX_TRADES = 30;
+
+// Module-level counter — gives every incoming trade a unique, stable id
+// without relying on time+price+qty which can collide on high-volume pairs.
+let _tradeSeq = 0;
+
+// Format a trade timestamp as HH:MM:SS
+const fmtTime = (ms) =>
+  new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
 // --- MAIN COMPONENT ---
 const Trade = () => {
   const { user } = useSelector((state) => state.auth);
@@ -54,25 +65,67 @@ const Trade = () => {
   const [inputPrice,   setInputPrice]   = useState('');
   const [inputAmount,  setInputAmount]  = useState('');
   const [sellAmount,   setSellAmount]   = useState('');
-  const [balances,     setBalances]     = useState({});        // { USDT: { available, locked }, BTC: {...} }
+  const [balances,     setBalances]     = useState({});
   const [orderLoading, setOrderLoading] = useState(false);
-  const [orderFeedback, setOrderFeedback] = useState(null);   // { type: 'success'|'error', message }
-  const [buyOrderType,  setBuyOrderType]  = useState('limit'); // 'limit' | 'market'
+  const [orderFeedback, setOrderFeedback] = useState(null);
+  const [buyOrderType,  setBuyOrderType]  = useState('limit');
   const [sellOrderType, setSellOrderType] = useState('limit');
+  const [kycStatus, setKycStatus] = useState(null); // null=loading, 'approved', 'pending', 'none', 'rejected'
+
+  // Binance live market data — flushed to state on a throttled interval
+  // livePrices: { BTC: { price, change24h, high24h, low24h, volume24h }, ... }
+  const [livePrices,   setLivePrices]   = useState({});
+  // Recent Binance trades for the selected pair
+  const [recentTrades, setRecentTrades] = useState([]);
+  // Left-panel tab: 'book' (internal order book) or 'trades' (Binance live trades)
+  const [leftTab, setLeftTab] = useState('book');
+
+  // Refs that buffer incoming Binance data between render cycles.
+  // Nothing renders until the flush intervals fire — prevents constant re-renders.
+  const pendingTickersRef = useRef({});   // accumulated ticker updates → flush every 1 s
+  const pendingTradesRef  = useRef([]);   // accumulated trade events  → flush every 300 ms
+
+  // Flush ticker buffer → livePrices once per second.
+  // Snapshot the ref BEFORE resetting it so the setState callback
+  // reads the captured values, not the already-cleared object.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const snapshot = pendingTickersRef.current;
+      if (Object.keys(snapshot).length === 0) return;
+      pendingTickersRef.current = {};           // reset first
+      setLivePrices(prev => ({ ...prev, ...snapshot })); // then commit snapshot
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Flush trade buffer → recentTrades every 300 ms.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const snapshot = pendingTradesRef.current;
+      if (snapshot.length === 0) return;
+      pendingTradesRef.current = [];            // reset first
+      setRecentTrades(prev => [...snapshot, ...prev].slice(0, MAX_TRADES));
+    }, 300);
+    return () => clearInterval(id);
+  }, []);
 
   // Use a ref so fetchOrderBook can always access latest selectedCoin
   const selectedCoinRef = useRef(selectedCoin);
   useEffect(() => { selectedCoinRef.current = selectedCoin; }, [selectedCoin]);
 
-  // When market order is selected (either side), auto-fill price with current market price.
-  // Also refresh price if the selected coin changes while market order is active.
+  // Clear recent trades when the pair changes so stale data doesn't flash
+  useEffect(() => { setRecentTrades([]); }, [selectedCoin.symbol]);
+
+  // When market order is selected, auto-fill price from Binance live price
+  // (falls back to CoinGecko if stream hasn't connected yet).
   useEffect(() => {
-    const mktObj = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
-    const price  = mktObj.current_price;
+    const livePrice = livePrices[selectedCoin.symbol]?.price;
+    const mktObj    = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
+    const price     = livePrice ?? mktObj.current_price;
     if (!price) return;
     if (buyOrderType  === 'market') setInputPrice(String(price));
     if (sellOrderType === 'market') setInputPrice(String(price));
-  }, [buyOrderType, sellOrderType, selectedCoin, marketList]);
+  }, [buyOrderType, sellOrderType, selectedCoin, marketList, livePrices]);
 
   // FETCH MARKETS (via backend proxy, with static fallback if API is unavailable)
   useEffect(() => {
@@ -122,16 +175,36 @@ const Trade = () => {
 
   useEffect(() => { fetchBalances(); }, [fetchBalances]);
 
+  useEffect(() => {
+    if (!user) { setKycStatus('none'); return; }
+    axios.get(`${API_URL}/api/kyc/status`, { withCredentials: true })
+      .then(({ data }) => setKycStatus(data.status ?? 'none'))
+      .catch(() => setKycStatus('none'));
+  }, [user]);
+
   // REAL-TIME UPDATES via WebSocket
   useTradeSocket({
     pair:            `${selectedCoin.symbol}/USDT`,
     userId:          user?.id,
+
+    // ── Internal exchange events ──────────────────────────────
     onDepthUpdate:   ({ asks, bids }) => {
       setAsks(asks.slice(0, MAX_ROWS));
       setBids(bids.slice(0, MAX_ROWS));
     },
     onBalanceUpdate: fetchBalances,
     onReconnect:     fetchOrderBook,
+
+    // ── Binance market-data events ────────────────────────────
+    // Write into refs only — state is flushed by the throttle intervals above.
+    // This decouples the high-frequency Binance stream from React's render cycle.
+    onBinanceTicker: (data) => {
+      pendingTickersRef.current[data.symbol] = data;
+    },
+    onBinanceTrade: (data) => {
+      pendingTradesRef.current.unshift({ ...data, _id: _tradeSeq++ });
+    },
+    // onBinanceDepth and onBinanceKline are available if you need them later
   });
 
   // PLACE ORDER
@@ -193,8 +266,15 @@ const Trade = () => {
     c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.symbol.toLowerCase().includes(search.toLowerCase())
   );
-  const mkt = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
-  const up  = (mkt.price_change_percentage_24h ?? 0) >= 0;
+  const mkt      = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
+  const liveMkt  = livePrices[selectedCoin.symbol]; // Binance live ticker for selected pair
+  // Prefer Binance live data, fall back to CoinGecko for display
+  const dispPrice    = liveMkt?.price              ?? mkt.current_price;
+  const dispChange   = liveMkt?.change24h          ?? mkt.price_change_percentage_24h;
+  const dispHigh     = liveMkt?.high24h            ?? mkt.high_24h;
+  const dispLow      = liveMkt?.low24h             ?? mkt.low_24h;
+  const dispVolume   = liveMkt?.volume24h          ?? mkt.total_volume;
+  const up           = (dispChange ?? 0) >= 0;
   const buyTotal  = inputPrice && inputAmount ? (parseFloat(inputPrice) * parseFloat(inputAmount)).toFixed(2) : '0';
   const sellTotal = inputPrice && sellAmount  ? (parseFloat(inputPrice) * parseFloat(sellAmount)).toFixed(2)  : '0';
   const usdtAvail = (balances.USDT?.available ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -227,7 +307,7 @@ const Trade = () => {
           <span className="text-lg font-bold">{selectedCoin.symbol}/USDT</span>
         </div>
         <span className={up ? 'text-[#0ecb81]' : 'text-[#f6465d]'}>
-          {mkt.price_change_percentage_24h?.toFixed(2)}%
+          {dispChange?.toFixed(2) ?? '—'}%
         </span>
       </div>
 
@@ -240,13 +320,13 @@ const Trade = () => {
           </span>
         </div>
         <span className={`font-bold text-base shrink-0 ${up ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
-          ${mkt.current_price?.toLocaleString() ?? '—'}
+          ${dispPrice?.toLocaleString() ?? '—'}
         </span>
         {[
-          ['24h Change', `${up ? '+' : ''}${mkt.price_change_percentage_24h?.toFixed(2)}%`, up],
-          ['24h High',   `$${mkt.high_24h?.toLocaleString() ?? '—'}`,  null],
-          ['24h Low',    `$${mkt.low_24h?.toLocaleString() ?? '—'}`,   null],
-          ['Volume',     mkt.total_volume ? `$${(mkt.total_volume / 1e9).toFixed(2)}B` : '—', null],
+          ['24h Change', `${up ? '+' : ''}${dispChange?.toFixed(2) ?? '—'}%`, up],
+          ['24h High',   `$${dispHigh?.toLocaleString() ?? '—'}`,  null],
+          ['24h Low',    `$${dispLow?.toLocaleString() ?? '—'}`,   null],
+          ['Volume',     dispVolume ? `$${(dispVolume / 1e9).toFixed(2)}B` : '—', null],
         ].map(([label, val, colored]) => (
           <div key={label} className="flex flex-col shrink-0">
             <span className="text-[#848e9c] text-[10px]">{label}</span>
@@ -262,42 +342,98 @@ const Trade = () => {
       {/* MAIN GRID */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-2 p-2 max-w-[1600px] mx-auto w-full">
 
-        {/* ── LEFT: ORDER BOOK ── */}
+        {/* ── LEFT: ORDER BOOK / LIVE TRADES ── */}
         <div className={`order-4 lg:order-1 lg:col-span-3 bg-[#1e2329] rounded-sm flex flex-col overflow-hidden border border-[#2b3139] min-h-[400px] ${PANEL_H}`}>
-          <div className="flex items-center px-3 py-2 border-b border-[#2b3139] shrink-0">
-            <span className="flex-1 text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Price (USDT)</span>
-            <span className="flex-1 text-right text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Amount</span>
-            <div className="flex-1 flex items-center justify-end gap-2">
-              <span className="text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Total</span>
-              <button onClick={fetchOrderBook} className={`text-[#848e9c] hover:text-[#eaecef] transition-colors ${loadingBook ? 'animate-spin' : ''}`} title="Refresh orderbook">
-                <IoRefreshOutline size={12} />
-              </button>
-            </div>
+
+          {/* Tab switcher */}
+          <div className="flex items-center border-b border-[#2b3139] shrink-0">
+            <button
+              onClick={() => setLeftTab('book')}
+              className={`flex-1 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors ${leftTab === 'book' ? 'text-[#eaecef] border-b-2 border-[#f0b90b]' : 'text-[#848e9c] hover:text-[#eaecef]'}`}
+            >
+              Order Book
+            </button>
+            <button
+              onClick={() => setLeftTab('trades')}
+              className={`flex-1 py-2 text-[11px] font-semibold uppercase tracking-wide transition-colors ${leftTab === 'trades' ? 'text-[#eaecef] border-b-2 border-[#f0b90b]' : 'text-[#848e9c] hover:text-[#eaecef]'}`}
+            >
+              Live Trades
+            </button>
           </div>
 
-          {loadingBook ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-2">
-              <div className="w-5 h-5 border-2 border-[#2b3139] border-t-[#848e9c] rounded-full animate-spin" />
-              <span className="text-[#848e9c] text-xs">Loading orders...</span>
-            </div>
-          ) : isEmpty ? (
-            <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
-              <div className="w-10 h-10 rounded-full bg-[#2b3139] flex items-center justify-center text-lg">📋</div>
-              <p className="text-[#eaecef] text-xs font-semibold">No open limit orders</p>
-              <button onClick={fetchOrderBook} className="text-[10px] px-3 py-1 rounded border border-[#363c45] text-[#848e9c] hover:border-[#f0b90b] hover:text-[#f0b90b] bg-[#2b3139] transition-colors">
-                Refresh
-              </button>
-            </div>
-          ) : (
+          {/* ORDER BOOK tab */}
+          {leftTab === 'book' && (
             <>
-              <div className="shrink-0">{askSlots.map((o, i) => <ObRow key={i} o={o} side="ask" />)}</div>
-              <div className="px-3 py-2 border-y border-[#2b3139] flex items-center justify-between bg-[#0b0e11] shrink-0">
-                <span className={`text-sm font-bold ${up ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
-                  ${mkt.current_price?.toLocaleString() || '---'}
-                </span>
-                <span className="text-[10px] text-[#848e9c]">≈ ${mkt.current_price?.toLocaleString()}</span>
+              <div className="flex items-center px-3 py-2 border-b border-[#2b3139] shrink-0">
+                <span className="flex-1 text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Price (USDT)</span>
+                <span className="flex-1 text-right text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Amount</span>
+                <div className="flex-1 flex items-center justify-end gap-2">
+                  <span className="text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Total</span>
+                  <button onClick={fetchOrderBook} className={`text-[#848e9c] hover:text-[#eaecef] transition-colors ${loadingBook ? 'animate-spin' : ''}`} title="Refresh orderbook">
+                    <IoRefreshOutline size={12} />
+                  </button>
+                </div>
               </div>
-              <div className="shrink-0">{bidSlots.map((o, i) => <ObRow key={i} o={o} side="bid" />)}</div>
+
+              {loadingBook ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-2">
+                  <div className="w-5 h-5 border-2 border-[#2b3139] border-t-[#848e9c] rounded-full animate-spin" />
+                  <span className="text-[#848e9c] text-xs">Loading orders...</span>
+                </div>
+              ) : isEmpty ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 text-center">
+                  <div className="w-10 h-10 rounded-full bg-[#2b3139] flex items-center justify-center text-lg">📋</div>
+                  <p className="text-[#eaecef] text-xs font-semibold">No open limit orders</p>
+                  <button onClick={fetchOrderBook} className="text-[10px] px-3 py-1 rounded border border-[#363c45] text-[#848e9c] hover:border-[#f0b90b] hover:text-[#f0b90b] bg-[#2b3139] transition-colors">
+                    Refresh
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="shrink-0">{askSlots.map((o, i) => <ObRow key={i} o={o} side="ask" />)}</div>
+                  <div className="px-3 py-2 border-y border-[#2b3139] flex items-center justify-between bg-[#0b0e11] shrink-0">
+                    <span className={`text-sm font-bold ${up ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                      ${dispPrice?.toLocaleString() ?? '---'}
+                    </span>
+                    <span className="text-[10px] text-[#848e9c]">≈ ${dispPrice?.toLocaleString() ?? '---'}</span>
+                  </div>
+                  <div className="shrink-0">{bidSlots.map((o, i) => <ObRow key={i} o={o} side="bid" />)}</div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* LIVE TRADES tab — real trades streamed from Binance */}
+          {leftTab === 'trades' && (
+            <>
+              <div className="flex items-center px-3 py-1.5 border-b border-[#2b3139] shrink-0">
+                <span className="flex-1 text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Price (USDT)</span>
+                <span className="flex-1 text-right text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Qty</span>
+                <span className="w-16 text-right text-[10px] font-semibold text-[#848e9c] uppercase tracking-wide">Time</span>
+              </div>
+
+              {recentTrades.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-2">
+                  <div className="w-5 h-5 border-2 border-[#2b3139] border-t-[#848e9c] rounded-full animate-spin" />
+                  <span className="text-[#848e9c] text-xs">Connecting to Binance…</span>
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto">
+                  {recentTrades.map((t) => (
+                    <div key={t._id} className="flex items-center px-3 hover:bg-[#2b3139]" style={{ height: ROW_H }}>
+                      <span className={`flex-1 font-mono text-xs ${t.isBuyerMaker ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
+                        {t.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="flex-1 text-right font-mono text-xs text-[#eaecef]">
+                        {t.qty.toFixed(4)}
+                      </span>
+                      <span className="w-16 text-right text-[10px] text-[#848e9c]">
+                        {fmtTime(t.time)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -375,6 +511,10 @@ const Trade = () => {
                 <p className="text-[#0ecb81] text-[10px] font-medium">Available: {usdtAvail} USDT</p>
                 {!user ? (
                   <Link to="/login" className="block w-full py-2 bg-[#0ecb81] hover:bg-[#0bb874] text-white font-bold text-sm rounded text-center transition-colors">Login / Sign Up</Link>
+                ) : kycStatus !== 'approved' ? (
+                  <Link to="/account" className="block w-full py-2 bg-[#2b3139] border border-[#363c45] text-[#f0b90b] font-bold text-xs rounded text-center transition-colors hover:border-[#f0b90b]">
+                    {kycStatus === null ? 'Checking KYC…' : 'Complete KYC to Trade →'}
+                  </Link>
                 ) : (
                   <button onClick={() => handlePlaceOrder('buy')} disabled={orderLoading || !inputPrice || !inputAmount} className="w-full py-2 bg-[#0ecb81] hover:bg-[#0bb874] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
                     {orderLoading ? 'Placing…' : `Buy ${selectedCoin.symbol}`}
@@ -410,13 +550,14 @@ const Trade = () => {
                     Price
                     {sellOrderType === 'market' && <span className="ml-1.5 text-[#f0b90b] font-semibold">— Market</span>}
                   </label>
-                  <div className={`bg-[#2b3139] border rounded flex items-center px-3 py-1.5 transition-colors ${sellOrderType === 'market' ? 'border-[#f0b90b]/40 opacity-70' : 'border-[#363c45]'}`}>
+                  <div className={`bg-[#2b3139] border rounded flex items-center px-3 py-1.5 transition-colors ${sellOrderType === 'market' ? 'border-[#f0b90b]/40 opacity-70' : 'border-[#363c45] focus-within:border-[#f0b90b]'}`}>
                     <input
                       type="number"
                       className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]"
                       placeholder="0.00"
                       value={inputPrice}
-                      readOnly
+                      readOnly={sellOrderType === 'market'}
+                      onChange={e => sellOrderType === 'limit' && setInputPrice(e.target.value)}
                     />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">USDT</span>
                   </div>
@@ -443,6 +584,10 @@ const Trade = () => {
                 <p className="text-[#f6465d] text-[10px] font-medium">Available: {coinAvail} {selectedCoin.symbol}</p>
                 {!user ? (
                   <Link to="/login" className="block w-full py-2 bg-[#f6465d] hover:bg-[#e03d52] text-white font-bold text-sm rounded text-center transition-colors">Login / Sign Up</Link>
+                ) : kycStatus !== 'approved' ? (
+                  <Link to="/account" className="block w-full py-2 bg-[#2b3139] border border-[#363c45] text-[#f0b90b] font-bold text-xs rounded text-center transition-colors hover:border-[#f0b90b]">
+                    {kycStatus === null ? 'Checking KYC…' : 'Complete KYC to Trade →'}
+                  </Link>
                 ) : (
                   <button onClick={() => handlePlaceOrder('sell')} disabled={orderLoading || !inputPrice || !sellAmount} className="w-full py-2 bg-[#f6465d] hover:bg-[#e03d52] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
                     {orderLoading ? 'Placing…' : `Sell ${selectedCoin.symbol}`}
@@ -472,8 +617,13 @@ const Trade = () => {
             {filteredCoins.map(coin => {
               const sym        = coin.symbol.toUpperCase();
               const isSelected = selectedCoin.symbol === sym;
-              const positive   = (coin.price_change_percentage_24h ?? 0) >= 0;
- 
+
+              // Prefer Binance live price/change; fall back to CoinGecko snapshot
+              const live        = livePrices[sym];
+              const displayPrice  = live?.price    ?? coin.current_price;
+              const displayChange = live?.change24h ?? coin.price_change_percentage_24h;
+              const livePositive  = (displayChange ?? 0) >= 0;
+
               return (
                 <div
                   key={coin.id}
@@ -490,10 +640,10 @@ const Trade = () => {
                     </div>
                   </div>
                   <div className="w-20 text-right text-[11px] font-mono text-[#eaecef]">
-                    ${coin.current_price?.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                    ${displayPrice?.toLocaleString(undefined, { maximumFractionDigits: 4 })}
                   </div>
-                  <div className={`w-14 text-right text-[10px] font-semibold ${positive ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
-                    {positive ? '+' : ''}{coin.price_change_percentage_24h?.toFixed(2)}%
+                  <div className={`w-14 text-right text-[10px] font-semibold ${livePositive ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                    {livePositive ? '+' : ''}{displayChange?.toFixed(2)}%
                   </div>
                 </div>
               );

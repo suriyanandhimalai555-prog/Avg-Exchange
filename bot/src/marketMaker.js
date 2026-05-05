@@ -66,8 +66,11 @@ class MarketMaker {
     if (!this.running) return Promise.resolve();
     if (this.timer) clearInterval(this.timer);
     this.running = false;
-    console.log(`\n[${this.pair}] Stopping — cancelling open orders…`);
-    return this.orders.cancelAll();
+    console.log(`\n[${this.pair}] Stopping — cancelling all open orders…`);
+    // cancelAllOpen() fetches open orders from the exchange API rather than
+    // relying on the in-memory openOrderIds set, so it correctly handles the
+    // case where the bot was previously killed and the in-memory set is empty.
+    return this.orders.cancelAllOpen();
   }
 }
 

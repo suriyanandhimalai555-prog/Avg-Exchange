@@ -8,6 +8,31 @@ const savedUser = (() => {
   } catch { return null }
 })()
 
+// Silently re-fetches the user profile from the server using the existing cookie.
+// Fixes stale localStorage (e.g. missing `id` from old sessions).
+export const refreshUser = createAsyncThunk(
+  'auth/refreshUser',
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await fetch(`${API_URL}/api/user/me`, { credentials: 'include' });
+      if (!res.ok) return rejectWithValue(null); // not logged in — ignore silently
+      const data = await res.json();
+      const user = {
+        id:           data.id,
+        email:        data.email,
+        name:         data.name,
+        referralCode: data.referral_code,
+        isAdmin:      data.is_admin,
+        kycStatus:    data.kyc_status,
+      };
+      localStorage.setItem('user', JSON.stringify(user));
+      return user;
+    } catch {
+      return rejectWithValue(null);
+    }
+  }
+);
+
 export const loginUser = createAsyncThunk(
   'auth/loginUser',
   // Accept rememberMe
@@ -54,6 +79,21 @@ export const signupUser = createAsyncThunk(
   }
 );
 
+export const logoutUser = createAsyncThunk(
+  'auth/logoutUser',
+  async (_, { rejectWithValue }) => {
+    try {
+      await fetch(`${API_URL}/api/user/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch (_) {
+      // Ignore network errors — still clear local state
+    }
+    localStorage.removeItem('user');
+  }
+);
+
 const authSlice = createSlice({
   name: 'auth',
   initialState: {
@@ -90,6 +130,18 @@ const authSlice = createSlice({
       .addCase(signupUser.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload;
+      })
+      .addCase(logoutUser.fulfilled, (state) => {
+        state.user = null;
+        state.error = null;
+      })
+      .addCase(refreshUser.fulfilled, (state, action) => {
+        state.user = action.payload;
+      })
+      .addCase(refreshUser.rejected, (state) => {
+        // Cookie invalid/expired — clear stale local user
+        state.user = null;
+        localStorage.removeItem('user');
       });
   }
 })

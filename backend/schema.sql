@@ -61,3 +61,33 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS idx_trades_buyer  ON trades(buyer_id);
 CREATE INDEX IF NOT EXISTS idx_trades_seller ON trades(seller_id);
 CREATE INDEX IF NOT EXISTS idx_trades_pair   ON trades(pair);
+
+-- ── is_admin flag on User ────────────────────────────────────
+-- Run this migration once if the column does not yet exist:
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS is_admin       BOOLEAN      NOT NULL DEFAULT FALSE;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS name           VARCHAR(200);
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS referral_code  VARCHAR(20)  UNIQUE;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS referred_by    INTEGER      REFERENCES "User"(id);
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS referral_count INTEGER      NOT NULL DEFAULT 0;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW();
+
+-- ── kyc_submissions ──────────────────────────────────────────
+-- One row per user. Re-submission on rejection uses ON CONFLICT upsert.
+CREATE TABLE IF NOT EXISTS kyc_submissions (
+  id              SERIAL        PRIMARY KEY,
+  user_id         INTEGER       NOT NULL UNIQUE REFERENCES "User"(id) ON DELETE CASCADE,
+  full_name       VARCHAR(200)  NOT NULL,
+  date_of_birth   DATE          NOT NULL,
+  document_type   VARCHAR(50)   NOT NULL,
+  document_number VARCHAR(100)  NOT NULL,
+  document_path   TEXT,                          -- local file path for uploaded doc
+  status          VARCHAR(20)   NOT NULL DEFAULT 'pending',
+  submitted_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  reviewed_at     TIMESTAMPTZ,
+  reviewer_note   TEXT,
+
+  CONSTRAINT kyc_status_check CHECK (status IN ('pending', 'approved', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_kyc_user_id ON kyc_submissions(user_id);
+CREATE INDEX IF NOT EXISTS idx_kyc_status  ON kyc_submissions(status);

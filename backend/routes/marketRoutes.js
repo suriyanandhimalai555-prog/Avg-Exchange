@@ -1,6 +1,7 @@
-const express = require('express');
-const axios   = require('axios');
-const router  = express.Router();
+const express       = require('express');
+const axios         = require('axios');
+const binanceStream = require('../services/binanceStreamService');
+const router        = express.Router();
 
 // ── In-memory response cache ──────────────────────────────────────────────────
 // Keyed by serialised query params so different per_page/page combos are cached
@@ -59,6 +60,17 @@ router.get('/', async (req, res) => {
     const status = err.response?.status ?? 500;
     return res.status(status).json({ error: 'Failed to fetch market data', detail: err.message });
   }
+});
+
+// GET /api/markets/live — returns Binance real-time ticker for all tracked pairs.
+// Shape: { BTC: { symbol, price, change24h, high24h, low24h, volume24h, ts }, ... }
+// Returns 503 if the stream hasn't populated the cache yet (< ~1 s after boot).
+router.get('/live', (req, res) => {
+  const tickers = binanceStream.getAllTickers();
+  if (Object.keys(tickers).length === 0) {
+    return res.status(503).json({ error: 'Live prices not yet available — stream is connecting' });
+  }
+  res.json(tickers);
 });
 
 module.exports = router;

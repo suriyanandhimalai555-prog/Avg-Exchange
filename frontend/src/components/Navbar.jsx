@@ -2,15 +2,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
-import { logout } from '../features/authSlice';
+import { logoutUser } from '../features/authSlice';
 import { fetchNavbarBalance, clearBalance } from '../features/balanceSlice';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  IoMenu, IoClose, IoSearchOutline, IoGlobeOutline,
+  IoMenu, IoClose,
   IoChevronForward, IoWalletOutline, IoBarChartOutline,
   IoSwapHorizontal, IoChevronDown, IoCopyOutline,
   IoLogOutOutline, IoCheckmarkCircle,
-  IoListOutline, IoPersonOutline, IoPeopleOutline,
+  IoListOutline, IoPersonOutline, IoGridOutline, IoSettingsOutline,
 } from 'react-icons/io5';
 import { navStyles as s } from './NavbarStyles';
 import LogoWebp from '../assets/kucoin-logo.webp';
@@ -37,7 +37,6 @@ const dropdownVariants = {
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState('exchange');
   const [copied, setCopied] = useState(false);
 
   const user = useSelector((state) => state.auth.user);
@@ -79,10 +78,10 @@ const Navbar = () => {
     if (path) navigate(path);
   };
 
-  const handleLogout = () => {
-    dispatch(logout());
+  const handleLogout = async () => {
     setIsOpen(false);
     setIsDropdownOpen(false);
+    await dispatch(logoutUser());
     navigate('/login');
   };
 
@@ -105,23 +104,7 @@ const Navbar = () => {
               <img src={LogoWebp} alt="Logo" className={s.logoImg} />
             </Link>
 
-            <div className={s.switcherContainer}>
-              <button 
-                onClick={() => setActiveTab('exchange')}
-                className={activeTab === 'exchange' ? s.switcherActive : s.switcherInactive}
-              >
-                Exchange
-              </button>
-              <button 
-                onClick={() => setActiveTab('web3')}
-                className={activeTab === 'web3' ? s.switcherActive : s.switcherInactive}
-              >
-                Web3
-              </button>
-            </div>
-
             <div className={s.mainNav}>
-              <Link to="/buy-crypto" className={s.navMenuItem}>Buy Crypto</Link>
               <Link to="/markets" className={s.navMenuItem}>Markets</Link>
               <Link to="/trade" className={s.navMenuItem}>Trade</Link>
             </div>
@@ -129,8 +112,6 @@ const Navbar = () => {
 
           {/* --- RIGHT SECTION (DESKTOP) --- */}
           <div className={s.rightSection}>
-            <button className={s.iconBtn}><IoSearchOutline size={20} /></button>
-            
             {!user ? (
               <div className={s.authGroup}>
                 <Link to="/login" className={s.loginBtn}>Log In</Link>
@@ -195,6 +176,14 @@ const Navbar = () => {
 
                       {/* Menu Items */}
                       <div className="py-2 flex flex-col">
+                        {user?.isAdmin && (
+                          <Link to="/admin" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
+                            <IoSettingsOutline size={18} /> Admin Panel
+                          </Link>
+                        )}
+                        <Link to="/dashboard" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
+                          <IoGridOutline size={18} /> Dashboard
+                        </Link>
                         <Link to="/wallet" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoWalletOutline size={18} /> Assets
                         </Link>
@@ -203,9 +192,6 @@ const Navbar = () => {
                         </Link>
                         <Link to="/account" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoPersonOutline size={18} /> Account & KYC
-                        </Link>
-                        <Link to="#" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
-                          <IoPeopleOutline size={18} /> Referral
                         </Link>
                       </div>
 
@@ -224,7 +210,6 @@ const Navbar = () => {
               </div>
             )}
             
-            <button className={s.iconBtn}><IoGlobeOutline size={20} /></button>
           </div>
 
           {/* --- MOBILE CONTROLS (< XL) --- */}
@@ -319,15 +304,10 @@ const Navbar = () => {
 
                 {/* Navigation Links */}
                 <div className="flex flex-col">
-                  <MobileLink 
-                    onClick={() => handleNav('/buy-crypto')} 
-                    label="Buy Crypto" 
-                    icon={<IoWalletOutline />} 
-                  />
-                  <MobileLink 
-                    onClick={() => handleNav('/markets')} 
-                    label="Markets" 
-                    icon={<IoBarChartOutline />} 
+                  <MobileLink
+                    onClick={() => handleNav('/markets')}
+                    label="Markets"
+                    icon={<IoBarChartOutline />}
                   />
                   <MobileLink 
                     onClick={() => handleNav('/trade')} 
@@ -336,6 +316,11 @@ const Navbar = () => {
                   />
                   {user && (
                     <>
+                      <MobileLink
+                        onClick={() => handleNav('/dashboard')}
+                        label="Dashboard"
+                        icon={<IoGridOutline />}
+                      />
                       <MobileLink
                         onClick={() => handleNav('/wallet')}
                         label="Assets & Orders"

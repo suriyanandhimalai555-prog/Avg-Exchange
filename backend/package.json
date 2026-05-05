@@ -24,7 +24,8 @@
     "nodejs-order-book": "^10.0.1",
     "pg": "^8.18.0",
     "socket.io": "^4.7.5",
-    "validator": "^13.7.0"
+    "validator": "^13.7.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
