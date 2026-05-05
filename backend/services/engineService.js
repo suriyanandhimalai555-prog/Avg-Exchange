@@ -16,6 +16,7 @@
  */
 
 const { OrderBook } = require('nodejs-order-book');
+const Decimal = require('decimal.js');
 const db = require('../db');
 
 class EngineService {
@@ -90,7 +91,7 @@ class EngineService {
    * @param {number} order.quantity
    * @returns {{ executedTrades: object[], quantityLeft: number }}
    */
-  async placeOrder({ id: dbOrderId, userId, pair, side, type = 'limit', price, quantity }) {
+  async placeOrder({ id: dbOrderId, userId, pair, side, type = 'limit', price, quantity, lockedAmount }) {
     const { baseCurrency, quoteCurrency } = this._parsePair(pair);
     const book = this._getBook(pair);
 
@@ -134,6 +135,13 @@ class EngineService {
     // ── Settle each fill ──────────────────────────────────────
     const executedTrades = [];
 
+    // For market buy orders: track accumulated cost to guard against slippage
+    // exceeding the locked amount. If a fill would push totalCost > lockedAmount,
+    // we skip it — the engine already matched it in memory but we don't settle it,
+    // and the corresponding funds refund happens in the route's cleanup step.
+    let dAccumulatedCost = new Decimal(0);
+    const dLockedAmount  = lockedAmount ? new Decimal(lockedAmount) : null;
+
     for (const fill of fills) {
       // Fetch counterparty details from DB (user_id + original limit price for refund calc)
       const counterRes = await db.query(
@@ -146,13 +154,24 @@ class EngineService {
       }
       const counter = counterRes.rows[0];
 
-      const isBuyerNew   = (side === 'buy');
-      const buyOrderId   = isBuyerNew ? dbOrderId        : fill.matchOrderId;
-      const sellOrderId  = isBuyerNew ? fill.matchOrderId : dbOrderId;
-      const buyerId      = isBuyerNew ? userId            : counter.user_id;
-      const sellerId     = isBuyerNew ? counter.user_id   : userId;
-      // The buyer originally locked funds at their limit price — needed to compute refund
+      const isBuyerNew    = (side === 'buy');
+      const buyOrderId    = isBuyerNew ? dbOrderId        : fill.matchOrderId;
+      const sellOrderId   = isBuyerNew ? fill.matchOrderId : dbOrderId;
+      const buyerId       = isBuyerNew ? userId            : counter.user_id;
+      const sellerId      = isBuyerNew ? counter.user_id   : userId;
       const buyLimitPrice = isBuyerNew ? price : parseFloat(counter.price);
+
+      // ── Slippage guard for market buy orders ────────────────
+      // If settling this fill would push the buyer's total spend past their
+      // locked amount, skip it — the locked amount caps the loss.
+      if (isBuyerNew && dLockedAmount && type === 'market') {
+        const dFillCost = new Decimal(fill.fillPrice).mul(fill.fillQty);
+        if (dAccumulatedCost.plus(dFillCost).gt(dLockedAmount)) {
+          console.warn(`[engineService] Slippage guard: skipping fill — would exceed locked ${dLockedAmount} (accumulated ${dAccumulatedCost})`);
+          continue;
+        }
+        dAccumulatedCost = dAccumulatedCost.plus(dFillCost);
+      }
 
       const client = await db.getClient();
       try {
@@ -186,10 +205,21 @@ class EngineService {
    * Call once during server startup to survive restarts without losing the book state.
    */
   async recoverFromDB() {
+    // Auto-heal ghost orders (remaining_quantity = 0 but not marked filled).
+    // These are created by race conditions or pre-Decimal.js settlement bugs.
+    // Mark them filled in the DB before loading the book so they are never recovered.
+    await db.query(`
+      UPDATE orders
+         SET status = 'filled', updated_at = NOW()
+       WHERE remaining_quantity <= 0
+         AND status IN ('open', 'partially_filled')
+    `);
+
     const { rows } = await db.query(
       `SELECT id, user_id, pair, side, price, remaining_quantity AS quantity
          FROM orders
         WHERE status IN ('open', 'partially_filled')
+          AND remaining_quantity > 0
         ORDER BY created_at ASC`  // oldest orders get time-priority
     );
 
@@ -280,10 +310,12 @@ class EngineService {
 
     try { book.cancel(orderId); } catch (_) {}
 
-    // Release the locked funds back to available
-    const remaining = parseFloat(order.remaining_quantity);
+    // Release the locked funds back to available (Decimal to avoid floating-point drift)
+    const dRemaining   = new Decimal(order.remaining_quantity);
     const lockCurrency = order.side === 'buy' ? quoteCurrency : baseCurrency;
-    const lockAmount   = order.side === 'buy' ? parseFloat(order.price) * remaining : remaining;
+    const lockAmount   = order.side === 'buy'
+      ? new Decimal(order.price).mul(dRemaining).toFixed(10)
+      : dRemaining.toFixed(10);
 
     await db.unlockFunds(order.user_id, lockCurrency, lockAmount);
     await db.query(`UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [orderId]);

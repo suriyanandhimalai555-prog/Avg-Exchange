@@ -91,3 +91,23 @@ CREATE TABLE IF NOT EXISTS kyc_submissions (
 
 CREATE INDEX IF NOT EXISTS idx_kyc_user_id ON kyc_submissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_kyc_status  ON kyc_submissions(status);
+
+-- ── payment_invoices ─────────────────────────────────────────
+-- Tracks OxaPay invoices so callbacks can credit the right user.
+CREATE TABLE IF NOT EXISTS payment_invoices (
+  id          SERIAL        PRIMARY KEY,
+  user_id     INTEGER       NOT NULL REFERENCES "User"(id) ON DELETE CASCADE,
+  track_id    VARCHAR(100)  NOT NULL UNIQUE,   -- OxaPay's trackId
+  currency    VARCHAR(20)   NOT NULL,          -- invoice currency (e.g. 'USDT')
+  amount      NUMERIC(28,10) NOT NULL,
+  status      VARCHAR(30)   NOT NULL DEFAULT 'pending',  -- pending|Paid|Expired|Error
+  payment_url TEXT,
+  credited    BOOLEAN       NOT NULL DEFAULT FALSE,  -- guard against double-credit
+  created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT payment_status_check CHECK (status IN ('pending','Waiting','Paid','Underpaid','Expired','Error'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_user_id  ON payment_invoices(user_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_track_id ON payment_invoices(track_id);

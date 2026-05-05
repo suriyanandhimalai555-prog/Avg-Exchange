@@ -6,11 +6,11 @@ import axios from 'axios';
 import { io } from 'socket.io-client';
 import {
   IoWalletOutline, IoAddCircleOutline, IoSwapHorizontalOutline,
-  IoCloseOutline, IoCheckmarkCircleOutline, IoAlertCircleOutline,
-  IoArrowDownOutline, IoTimeOutline, IoBarChartOutline,
+  IoTimeOutline, IoBarChartOutline,
   IoEyeOutline, IoEyeOffOutline, IoRefreshOutline,
 } from 'react-icons/io5';
 import API_URL from '../config/api';
+import DepositModal from '../components/dashboard/DepositModal';
 
 const SUPPORTED_COINS = [
   { symbol: 'USDT', name: 'Tether',          color: '#26a17b' },
@@ -41,11 +41,7 @@ const Wallet = () => {
   const [hideBalance, setHideBalance] = useState(false);
 
   // Deposit modal
-  const [depositOpen,     setDepositOpen]     = useState(false);
-  const [depositCoin,     setDepositCoin]     = useState('USDT');
-  const [depositAmount,   setDepositAmount]   = useState('');
-  const [depositLoading,  setDepositLoading]  = useState(false);
-  const [depositFeedback, setDepositFeedback] = useState(null); // { type, message }
+  const [depositOpen, setDepositOpen] = useState(false);
 
   // Cancel order
   const [cancellingId, setCancellingId] = useState(null);
@@ -96,31 +92,10 @@ const Wallet = () => {
     return () => socket.disconnect();
   }, [user?.id, fetchAll]);
 
-  const handleDeposit = async (e) => {
-    e.preventDefault();
-    const amount = parseFloat(depositAmount);
-    if (!amount || amount <= 0) return;
-    setDepositLoading(true);
-    setDepositFeedback(null);
-    try {
-      const { data } = await axios.post(
-        `${API_URL}/api/user/deposit`,
-        { currency: depositCoin, amount },
-        { withCredentials: true }
-      );
-      setDepositFeedback({
-        type: 'success',
-        message: `${data.credited.toLocaleString()} ${data.currency} credited to your account`,
-      });
-      setDepositAmount('');
-      fetchAll();
-      dispatch(fetchNavbarBalance());
-    } catch (err) {
-      setDepositFeedback({ type: 'error', message: err.response?.data?.error || 'Deposit failed' });
-    } finally {
-      setDepositLoading(false);
-    }
-  };
+  const handleDepositSuccess = useCallback(() => {
+    fetchAll();
+    dispatch(fetchNavbarBalance());
+  }, [fetchAll, dispatch]);
 
   const handleCancelOrder = async (orderId) => {
     setCancellingId(orderId);
@@ -131,10 +106,7 @@ const Wallet = () => {
     finally { setCancellingId(null); }
   };
 
-  const openDepositFor = (symbol) => {
-    setDepositCoin(symbol);
-    setDepositAmount('');
-    setDepositFeedback(null);
+  const openDepositFor = () => {
     setDepositOpen(true);
   };
 
@@ -204,7 +176,7 @@ const Wallet = () => {
                 </span>
                 <span className="text-[#848e9c] text-lg">USDT</span>
               </div>
-              <p className="text-[#848e9c] text-xs mt-1">Testnet — virtual funds for demo purposes</p>
+              <p className="text-[#848e9c] text-xs mt-1">Deposit via OxaPay — sandbox mode active</p>
             </div>
 
             <div className="flex items-center gap-3">
@@ -489,117 +461,11 @@ const Wallet = () => {
         )}
       </div>
 
-      {/* ── DEPOSIT MODAL ── */}
-      {depositOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setDepositOpen(false)} />
-          <div className="relative w-full max-w-md bg-[#1e2329] border border-[#2b3139] rounded-2xl shadow-2xl overflow-hidden">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#2b3139]">
-              <div className="flex items-center gap-3">
-                <IoArrowDownOutline className="text-[#f0b90b]" size={20} />
-                <h2 className="font-bold text-[#eaecef]">Deposit Funds</h2>
-              </div>
-              <button onClick={() => setDepositOpen(false)} className="text-[#848e9c] hover:text-[#eaecef] transition-colors">
-                <IoCloseOutline size={22} />
-              </button>
-            </div>
-
-            <form onSubmit={handleDeposit} className="px-6 py-5 flex flex-col gap-4">
-              {/* Testnet notice */}
-              <div className="flex items-start gap-2 px-3 py-2.5 bg-[#f0b90b]/5 border border-[#f0b90b]/20 rounded-lg">
-                <IoAlertCircleOutline className="text-[#f0b90b] shrink-0 mt-0.5" size={16} />
-                <p className="text-xs text-[#848e9c]">
-                  This is a <strong className="text-[#f0b90b]">testnet exchange</strong>. Deposited funds are virtual and have no real value.
-                </p>
-              </div>
-
-              {/* Currency selector */}
-              <div>
-                <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wide mb-2">Select Coin</label>
-                <div className="grid grid-cols-5 gap-2">
-                  {SUPPORTED_COINS.map(({ symbol, color }) => (
-                    <button
-                      key={symbol}
-                      type="button"
-                      onClick={() => setDepositCoin(symbol)}
-                      className={`flex flex-col items-center gap-1 py-2 rounded-lg border text-xs font-bold transition-all ${
-                        depositCoin === symbol
-                          ? 'border-[#f0b90b] bg-[#f0b90b]/10 text-[#f0b90b]'
-                          : 'border-[#363c45] bg-[#2b3139] text-[#848e9c] hover:border-[#848e9c]'
-                      }`}
-                    >
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[9px] font-bold" style={{ background: color }}>
-                        {symbol.slice(0, 2)}
-                      </div>
-                      {symbol}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Quick amount buttons */}
-              <div>
-                <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wide mb-2">Amount</label>
-                <div className="bg-[#2b3139] border border-[#363c45] focus-within:border-[#f0b90b] rounded-lg flex items-center px-4 py-3 transition-colors mb-2">
-                  <input
-                    type="number"
-                    required
-                    min="0.000001"
-                    step="any"
-                    value={depositAmount}
-                    onChange={e => setDepositAmount(e.target.value)}
-                    placeholder="Enter amount"
-                    className="bg-transparent text-[#eaecef] text-base w-full outline-none font-mono placeholder-[#848e9c]"
-                  />
-                  <span className="text-[#848e9c] text-sm font-bold pl-3 shrink-0">{depositCoin}</span>
-                </div>
-
-                {/* Quick-fill buttons */}
-                <div className="grid grid-cols-4 gap-2">
-                  {(depositCoin === 'USDT'
-                    ? [1000, 5000, 10000, 50000]
-                    : depositCoin === 'BTC'
-                    ? [0.01, 0.1, 1, 10]
-                    : [0.1, 1, 10, 100]
-                  ).map(amt => (
-                    <button
-                      key={amt}
-                      type="button"
-                      onClick={() => setDepositAmount(String(amt))}
-                      className="py-1.5 text-xs font-semibold text-[#848e9c] border border-[#363c45] rounded hover:border-[#f0b90b] hover:text-[#f0b90b] bg-[#2b3139] transition-colors"
-                    >
-                      {amt.toLocaleString()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Feedback */}
-              {depositFeedback && (
-                <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm ${
-                  depositFeedback.type === 'success'
-                    ? 'bg-[#0ecb81]/10 border border-[#0ecb81]/20 text-[#0ecb81]'
-                    : 'bg-[#f6465d]/10 border border-[#f6465d]/20 text-[#f6465d]'
-                }`}>
-                  {depositFeedback.type === 'success'
-                    ? <IoCheckmarkCircleOutline size={18} />
-                    : <IoAlertCircleOutline size={18} />}
-                  {depositFeedback.message}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={depositLoading || !depositAmount}
-                className="w-full py-3 bg-[#f0b90b] hover:bg-[#d4a300] disabled:opacity-40 disabled:cursor-not-allowed text-black font-bold rounded-lg transition-colors active:scale-[0.98]"
-              >
-                {depositLoading ? 'Processing…' : `Deposit ${depositCoin}`}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
+      <DepositModal
+        open={depositOpen}
+        onClose={() => setDepositOpen(false)}
+        onSuccess={handleDepositSuccess}
+      />
     </div>
   );
 };

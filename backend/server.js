@@ -12,9 +12,10 @@ const userRoutes = require('./routes/user');
 const cryptoRoutes = require('./routes/cryptoRoutes');
 const oneInchRoutes = require('./routes/oneInchRoutes');
 const marketRoutes = require('./routes/marketRoutes');
-const tradeRoutes = require('./routes/tradeRoutes');
-const kycRoutes   = require('./routes/kycRoutes');
-const adminRoutes = require('./routes/adminRoutes');
+const tradeRoutes   = require('./routes/tradeRoutes');
+const kycRoutes     = require('./routes/kycRoutes');
+const adminRoutes   = require('./routes/adminRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -26,7 +27,15 @@ const allowedOrigins = process.env.CORS_ORIGINS
   : ['http://localhost:5173'];
 
 app.use(cors({ origin: allowedOrigins, credentials: true }));
-app.use(express.json());
+
+// express.json() with a verify hook — the ONLY correct way to capture the raw
+// body without consuming the stream before the parser sees it.
+// req.rawBody is used by the OxaPay callback HMAC verifier.
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  },
+}));
 app.use(cookieParser());
 
 // ── Socket.io ─────────────────────────────────────────────────
@@ -57,6 +66,7 @@ app.use('/api/markets', marketRoutes);
 app.use('/api/trade',   tradeRoutes(io));
 app.use('/api/kyc',     kycRoutes);
 app.use('/api/admin',   adminRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // Backwards-compatible alias
 app.use('/api/trending', marketRoutes);
@@ -125,52 +135,51 @@ async function purgeStaleBotOrders() {
 }
 
 // ── Startup ───────────────────────────────────────────────────
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, async () => {
-  if (process.env.NODE_ENV !== 'test') {
-    console.log(`Server listening on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
-  }
+// IMPORTANT: We run recovery BEFORE calling server.listen() so the engine
+// is fully populated before the first HTTP request can arrive.
+// Previously, listen() accepted connections while recoverFromDB() was still
+// running — a race that could produce ghost fills against an empty book.
 
-  // Step 1: Cancel any stale bot orders BEFORE loading the book.
-  // This prevents ghost fills when the bot is offline.
+const PORT = process.env.PORT || 4000;
+
+const shutdown = async (signal) => {
+  console.log(`[server] ${signal} received — shutting down gracefully…`);
+  binanceStream.destroy();
+  server.close(() => {
+    console.log('[server] HTTP server closed');
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(0), 10_000).unref();
+};
+
+(async () => {
+  // Step 1: Cancel stale bot orders BEFORE loading the book.
   try {
     await purgeStaleBotOrders();
   } catch (err) {
     console.error('[startup] Bot order purge failed:', err.message);
   }
 
-  // Step 2: Reload legitimate open user orders into the engine.
+  // Step 2: Reload open user orders into the engine.
   try {
     await engine.recoverFromDB();
-    // Broadcast the recovered depth so any already-connected frontend sees it
-    for (const pair of engine.getPairs()) {
-      const depth = engine.getDepth(pair);
-      io.emit('depth_update', { pair, asks: depth.asks, bids: depth.bids });
-    }
   } catch (err) {
     console.error('[startup] Order recovery failed:', err.message);
   }
 
-  // Graceful shutdown — drain connections, destroy streams, exit cleanly.
-  //
-  // We do NOT cancel open user orders here. User limit orders are durable:
-  // they live in Postgres and are reloaded by recoverFromDB() on the next
-  // boot. Cancelling them on every restart would be wrong (a user's resting
-  // $65k BTC bid should not disappear just because we deployed a new build).
-  //
-  // Bot orders are handled separately: purgeStaleBotOrders() at startup
-  // clears any stale bot liquidity before the book is reconstructed.
-  const shutdown = async (signal) => {
-    console.log(`[server] ${signal} received — shutting down gracefully…`);
-    binanceStream.destroy();
-    server.close(() => {
-      console.log('[server] HTTP server closed');
-      process.exit(0);
-    });
-    // Force exit after 10 s if pending connections don't drain
-    setTimeout(() => process.exit(0), 10_000).unref();
-  };
+  // Step 3: NOW start accepting connections — book is ready.
+  server.listen(PORT, () => {
+    if (process.env.NODE_ENV !== 'test') {
+      console.log(`Server listening on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+    }
 
-  process.once('SIGINT',  () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
-});
+    // Broadcast recovered depth to any clients that connected during startup
+    for (const pair of engine.getPairs()) {
+      const depth = engine.getDepth(pair);
+      io.emit('depth_update', { pair, asks: depth.asks, bids: depth.bids });
+    }
+
+    process.once('SIGINT',  () => shutdown('SIGINT'));
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+  });
+})();

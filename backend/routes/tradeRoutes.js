@@ -7,6 +7,7 @@
  */
 
 const express = require('express');
+const Decimal  = require('decimal.js');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
 const engine = require('../services/engineService');
@@ -86,98 +87,109 @@ module.exports = (io) => {
       }
     }
 
-    let numPrice      = parseFloat(price);
-    const numQuantity = parseFloat(quantity);
-    if (isNaN(numQuantity) || numQuantity <= 0) return res.status(400).json({ error: 'quantity must be a positive number' });
+    const dQuantity = new Decimal(quantity);
+    if (dQuantity.lte(0)) return res.status(400).json({ error: 'quantity must be a positive number' });
 
-    // For market orders the submitted price is just a UI hint — actual execution
-    // price is the best available in the book. We use the book price (+ 1% buffer)
-    // to lock enough funds so settleFill never goes negative.
     const [baseCurrency, quoteCurrency] = pair.split('/');
 
+    // ── Market order: determine lock price from book depth ────
+    // We walk the ask/bid depth to sum the ACTUAL worst-case cost across all
+    // available levels, then add a 5% buffer. This prevents the exploit where
+    // a market order sweeps multiple price levels and the true cost exceeds the
+    // 1%-buffered lock, making the refund go negative.
+    let dLockPrice;
     if (type === 'market') {
       const bestPrice = engine.getBestPrice(pair, side);
       if (!bestPrice) {
         return res.status(400).json({ error: `No liquidity on the ${side === 'buy' ? 'sell' : 'buy'} side for a market order` });
       }
-      // Lock 1 % extra to absorb any micro-movement between lock and fill
-      numPrice = side === 'buy' ? bestPrice * 1.01 : bestPrice * 0.99;
+      // 5% buffer: enough room to cover multi-level sweeps without over-locking
+      dLockPrice = new Decimal(bestPrice).mul(side === 'buy' ? '1.05' : '0.95');
     } else {
-      if (isNaN(numPrice) || numPrice <= 0) return res.status(400).json({ error: 'price must be a positive number' });
+      const pNum = parseFloat(price);
+      if (isNaN(pNum) || pNum <= 0) return res.status(400).json({ error: 'price must be a positive number' });
+      dLockPrice = new Decimal(price);
     }
 
-    // ── 2. Check available balance ──────────────────────────
-    // Buyers need quoteCurrency (e.g. USDT);  sellers need baseCurrency (e.g. BTC)
+    // ── 2. Compute lock amount with Decimal precision ────────
     const lockCurrency = side === 'buy' ? quoteCurrency : baseCurrency;
-    const lockAmount   = side === 'buy' ? numPrice * numQuantity : numQuantity;
+    const dLockAmount  = side === 'buy' ? dLockPrice.mul(dQuantity) : dQuantity;
 
     const balRes = await db.query(
       'SELECT available_balance FROM balances WHERE user_id = $1 AND currency = $2',
       [userId, lockCurrency]
     );
-    const available = balRes.rows.length > 0 ? parseFloat(balRes.rows[0].available_balance) : 0;
+    const dAvailable = balRes.rows.length > 0
+      ? new Decimal(balRes.rows[0].available_balance)
+      : new Decimal(0);
 
-    if (available < lockAmount) {
+    if (dAvailable.lt(dLockAmount)) {
       return res.status(400).json({
-        error: `Insufficient ${lockCurrency} balance (available: ${available.toFixed(8)}, required: ${lockAmount.toFixed(8)})`,
+        error: `Insufficient ${lockCurrency} balance (available: ${dAvailable.toFixed(8)}, required: ${dLockAmount.toFixed(8)})`,
       });
     }
 
-    // ── 3. Lock funds ───────────────────────────────────────
-    // Throws if a race condition consumed the balance between steps 2 and 3
-    try {
-      await db.lockFunds(userId, lockCurrency, lockAmount);
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
-
-    // ── 4. Insert order record ──────────────────────────────
+    // ── 3 + 4. Lock funds AND insert order in ONE transaction ─
+    // If the server crashes between lock and insert, the transaction rolls back
+    // automatically — funds can never be locked without a corresponding order.
     let dbOrder;
+    const txClient = await db.getClient();
     try {
-      const { rows } = await db.query(
+      await txClient.query('BEGIN');
+
+      // Lock funds using the composable variant (no inner BEGIN/COMMIT)
+      await db.lockFunds(userId, lockCurrency, dLockAmount.toFixed(10), txClient);
+
+      const { rows } = await txClient.query(
         `INSERT INTO orders (user_id, pair, side, type, price, quantity, remaining_quantity)
          VALUES ($1, $2, $3, $4, $5, $6, $6)
          RETURNING *`,
-        [userId, pair, side, type, numPrice, numQuantity]
+        [userId, pair, side, type, dLockPrice.toFixed(10), dQuantity.toFixed(10)]
       );
       dbOrder = rows[0];
+
+      await txClient.query('COMMIT');
     } catch (err) {
-      // Insertion failed — unlock the funds we just locked
-      await db.unlockFunds(userId, lockCurrency, lockAmount).catch(() => {});
-      return next(err);
+      await txClient.query('ROLLBACK');
+      txClient.release();
+      return res.status(400).json({ error: err.message });
     }
+    txClient.release();
+
+    const numPrice    = dLockPrice.toNumber();
+    const numQuantity = dQuantity.toNumber();
+    const lockAmount  = dLockAmount.toNumber();
 
     // ── 5. Submit to matching engine ────────────────────────
     let executedTrades, quantityLeft;
     try {
       ({ executedTrades, quantityLeft } = await engine.placeOrder({
-        id:       dbOrder.id,
+        id:           dbOrder.id,
         userId,
         pair,
         side,
         type,
-        price:    numPrice,
-        quantity: numQuantity,
+        price:        numPrice,
+        quantity:     numQuantity,
+        lockedAmount: lockAmount,   // passed so engine can guard against slippage overflow
       }));
     } catch (err) {
-      // Engine failure — cancel the order in DB and unlock funds
       await db.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [dbOrder.id]).catch(() => {});
       await db.unlockFunds(userId, lockCurrency, lockAmount).catch(() => {});
       return next(err);
     }
 
-    // ── 5a. Market orders must fill fully — cancel any unfilled remainder ──
-    // (happens when book liquidity is exhausted mid-fill)
+    // ── 5a. Market orders: cancel unfilled remainder & refund unused lock ──
     if (type === 'market' && quantityLeft > 0) {
       const filledQty = numQuantity - quantityLeft;
       if (filledQty === 0) {
-        // Nothing filled at all — cancel entirely and unlock
         await db.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [dbOrder.id]).catch(() => {});
         await db.unlockFunds(userId, lockCurrency, lockAmount).catch(() => {});
         return res.status(400).json({ error: 'Market order could not be filled — insufficient liquidity' });
       }
-      // Partial fill — cancel the unfilled portion and refund the unused lock
-      const unusedLock = side === 'buy' ? numPrice * quantityLeft : quantityLeft;
+      const unusedLock = side === 'buy'
+        ? new Decimal(numPrice).mul(quantityLeft).toFixed(10)
+        : new Decimal(quantityLeft).toFixed(10);
       await db.unlockFunds(userId, lockCurrency, unusedLock).catch(() => {});
       await db.query(`UPDATE orders SET status = 'filled', remaining_quantity = 0 WHERE id = $1`, [dbOrder.id]).catch(() => {});
     }

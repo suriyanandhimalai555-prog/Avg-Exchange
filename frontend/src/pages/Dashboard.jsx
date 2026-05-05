@@ -110,16 +110,11 @@ const Dashboard = () => {
 
   const kycLevel = user?.kycStatus === 'approved' ? 'Verified' : 'Basic';
 
-  const handleDeposit = async (currency, amount) => {
-    const { data } = await axios.post(
-      `${API_URL}/api/user/deposit`,
-      { currency, amount },
-      { withCredentials: true }
-    );
+  // Called by DepositModal after OxaPay confirms payment (webhook already credited the balance).
+  const handleDeposit = useCallback(() => {
     fetchData();
     dispatch(fetchNavbarBalance());
-    return data;
-  };
+  }, [fetchData, dispatch]);
 
   const handleRefresh = useCallback(() => {
     fetchData();
