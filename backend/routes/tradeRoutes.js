@@ -8,13 +8,45 @@
 
 const express = require('express');
 const Decimal  = require('decimal.js');
+const rateLimit = require('express-rate-limit');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
 const engine = require('../services/engineService');
 
 const VALID_SIDES = new Set(['buy', 'sell']);
 const VALID_TYPES = new Set(['limit', 'market']);
-const isValidPair = (pair) => typeof pair === 'string' && /^[A-Z1-9]+\/USDT$/.test(pair);
+
+// Whitelist of supported trading pairs
+const SUPPORTED_PAIRS = new Set([
+  'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT',
+  'ADA/USDT', 'DOGE/USDT', 'AVAX/USDT', 'MATIC/USDT', 'LTC/USDT',
+  'DOT/USDT', 'LINK/USDT', 'UNI/USDT', 'ATOM/USDT', 'TRX/USDT',
+]);
+
+const isValidPair = (pair) => typeof pair === 'string' && SUPPORTED_PAIRS.has(pair);
+
+// Rate limiters for trading endpoints
+const orderLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  message: { error: 'Too many orders — slow down' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.id || 'anon'),
+  // Admin/bot accounts are exempt — they place many orders legitimately as market makers
+  skip: (req) => req.user?.is_admin === true,
+});
+
+const cancelLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 600,
+  message: { error: 'Too many cancel requests — slow down' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.id || 'anon'),
+  // Admin/bot accounts are exempt — they cancel and replace orders every cycle
+  skip: (req) => req.user?.is_admin === true,
+});
 
 /**
  * @param {import('socket.io').Server} io
@@ -58,7 +90,7 @@ module.exports = (io) => {
    *   5. Pass to matching engine
    *   6. Emit WebSocket events for each fill
    */
-  router.post('/order', async (req, res, next) => {
+  router.post('/order', orderLimiter, async (req, res, next) => {
     const { pair, side, type = 'limit', price, quantity } = req.body;
     const userId = req.user.id;
 
@@ -87,8 +119,14 @@ module.exports = (io) => {
       }
     }
 
-    const dQuantity = new Decimal(quantity);
+    let dQuantity;
+    try {
+      dQuantity = new Decimal(quantity);
+    } catch (_) {
+      return res.status(400).json({ error: 'quantity must be a valid number' });
+    }
     if (dQuantity.lte(0)) return res.status(400).json({ error: 'quantity must be a positive number' });
+    if (dQuantity.gt('1e12')) return res.status(400).json({ error: 'quantity exceeds maximum allowed' });
 
     const [baseCurrency, quoteCurrency] = pair.split('/');
 
@@ -197,6 +235,8 @@ module.exports = (io) => {
     // ── 6. Emit WebSocket events ────────────────────────────
     // Always push the updated depth — covers both resting and filled orders
     emitDepth(pair);
+    // Signal the admin dashboard to refresh stats + orders (debounced on the client)
+    io.emit('admin:refresh');
 
     // Notify each party of their balance change
     for (const trade of executedTrades) {
@@ -212,7 +252,7 @@ module.exports = (io) => {
   });
 
   // ── DELETE /api/trade/order/:id ───────────────────────────
-  router.delete('/order/:id', async (req, res, next) => {
+  router.delete('/order/:id', cancelLimiter, async (req, res, next) => {
     const orderId = parseInt(req.params.id, 10);
     const userId  = req.user.id;
 
@@ -225,6 +265,7 @@ module.exports = (io) => {
       const result = await engine.cancelOrder(orderId);
       // Push updated depth — cancelled order is now gone from the book
       emitDepth(rows[0].pair);
+      io.emit('admin:refresh');
       res.json(result);
     } catch (err) {
       next(err);

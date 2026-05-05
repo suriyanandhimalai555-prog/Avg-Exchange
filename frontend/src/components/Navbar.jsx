@@ -13,7 +13,7 @@ import {
   IoListOutline, IoPersonOutline, IoGridOutline, IoSettingsOutline,
 } from 'react-icons/io5';
 import { navStyles as s } from './NavbarStyles';
-import LogoWebp from '../assets/kucoin-logo.webp';
+import LogoWebp from '../assets/avg-exchange-logo.webp';
 
 // Animation Variants
 const menuVariants = {
@@ -71,6 +71,7 @@ const Navbar = () => {
   // Prevent scrolling when mobile menu is open
   useEffect(() => {
     document.body.style.overflow = isOpen ? 'hidden' : 'unset';
+    return () => { document.body.style.overflow = 'unset'; };
   }, [isOpen]);
 
   const handleNav = (path) => {
@@ -184,10 +185,10 @@ const Navbar = () => {
                         <Link to="/dashboard" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoGridOutline size={18} /> Dashboard
                         </Link>
-                        <Link to="/wallet" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
+                        <Link to="/wallet/assets" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoWalletOutline size={18} /> Assets
                         </Link>
-                        <Link to="/wallet" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
+                        <Link to={user?.isAdmin ? '/admin/orders' : '/wallet/orders'} className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoListOutline size={18} /> Orders
                         </Link>
                         <Link to="/account" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
@@ -267,7 +268,7 @@ const Navbar = () => {
                       </div>
                       <div className={s.mobileProfileText}>
                         <span className={s.mobileEmail + " capitalize"}>{displayName}</span>
-                        <span className={s.mobileStatus}>Verified User</span>
+                        <span className={s.mobileStatus}>{user?.kycStatus === 'approved' ? 'Verified' : 'Unverified'}</span>
                       </div>
                     </div>
 
@@ -322,9 +323,14 @@ const Navbar = () => {
                         icon={<IoGridOutline />}
                       />
                       <MobileLink
-                        onClick={() => handleNav('/wallet')}
-                        label="Assets & Orders"
+                        onClick={() => handleNav('/wallet/assets')}
+                        label="Assets"
                         icon={<IoWalletOutline />}
+                      />
+                      <MobileLink
+                        onClick={() => handleNav(user?.isAdmin ? '/admin/orders' : '/wallet/orders')}
+                        label="Orders"
+                        icon={<IoListOutline />}
                       />
                       <MobileLink
                         onClick={() => handleNav('/account')}

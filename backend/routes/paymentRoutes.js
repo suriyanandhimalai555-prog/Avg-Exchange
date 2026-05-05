@@ -14,11 +14,21 @@
 
 const express     = require('express');
 const Decimal     = require('decimal.js');
+const rateLimit   = require('express-rate-limit');
 const requireAuth = require('../middleware/requireAuth');
 const db          = require('../db');
 const oxapay      = require('../services/oxapayService');
 
 const router = express.Router();
+
+const invoiceLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  message: { error: 'Too many invoice requests — please wait' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.id || 'anon'),
+});
 
 const SUPPORTED_CURRENCIES = new Set(['USDT', 'BTC', 'ETH', 'BNB', 'SOL', 'TRX', 'LTC']);
 
@@ -86,7 +96,7 @@ async function creditInvoice(trackId) {
 }
 
 // ── POST /api/payment/invoice ────────────────────────────────────────────────
-router.post('/invoice', requireAuth, async (req, res, next) => {
+router.post('/invoice', requireAuth, invoiceLimiter, async (req, res, next) => {
   try {
     const { currency = 'USDT', amount } = req.body;
     const userId = req.user.id;
@@ -108,8 +118,8 @@ router.post('/invoice', requireAuth, async (req, res, next) => {
     const returnUrl   = process.env.OXAPAY_RETURN_URL
       || `${process.env.FRONTEND_URL || 'http://localhost:5173'}/dashboard`;
 
-    const userRes = await db.query('SELECT email FROM "User" WHERE id = $1', [userId]);
-    const email   = userRes.rows[0]?.email;
+    const userRes = await db.query('SELECT email, name FROM "User" WHERE id = $1', [userId]);
+    const { email, name } = userRes.rows[0] ?? {};
 
     const { trackId, payLink } = await oxapay.createInvoice({
       amount:      dAmount.toNumber(),
@@ -118,7 +128,7 @@ router.post('/invoice', requireAuth, async (req, res, next) => {
       callbackUrl,
       returnUrl,
       email,
-      description: `AvgExchange deposit — ${dAmount.toFixed(8)} ${cur} for user #${userId}`,
+      description: `AvgExchange deposit — ${dAmount.toFixed(8)} ${cur} for ${name || email || `user #${userId}`}`,
     });
 
     await db.query(
@@ -191,15 +201,14 @@ router.post('/callback', async (req, res) => {
 
   const { body, rawBody } = req;
 
-  // HMAC verification
+  // HMAC verification — always required regardless of environment
   const receivedHmac = body?.hmac;
-  if (receivedHmac) {
-    if (!oxapay.verifyCallbackHmac(rawBody, receivedHmac)) {
-      console.warn('[payment/callback] HMAC mismatch — ignoring');
-      return;
-    }
-  } else if (process.env.NODE_ENV === 'production') {
-    console.warn('[payment/callback] Missing HMAC in production — ignoring');
+  if (!receivedHmac) {
+    console.warn('[payment/callback] Missing HMAC — ignoring');
+    return;
+  }
+  if (!oxapay.verifyCallbackHmac(rawBody, receivedHmac)) {
+    console.warn('[payment/callback] HMAC mismatch — ignoring');
     return;
   }
 

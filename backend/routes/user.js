@@ -46,9 +46,10 @@ router.get('/balance', requireAuth, async (req, res, next) => {
   }
 });
 
-// POST /api/user/deposit — credit funds for testing
+// POST /api/user/deposit — credit funds (admin-only, for testing/support)
 // Body: { currency: 'USDT', amount: 1000 }
-router.post('/deposit', requireAuth, async (req, res, next) => {
+const requireAdmin = require('../middleware/requireAdmin');
+router.post('/deposit', requireAuth, requireAdmin, async (req, res, next) => {
   const { currency, amount } = req.body;
   const parsed = parseFloat(amount);
 

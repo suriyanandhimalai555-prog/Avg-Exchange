@@ -415,7 +415,7 @@ const Trade = () => {
               {recentTrades.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-2">
                   <div className="w-5 h-5 border-2 border-[#2b3139] border-t-[#848e9c] rounded-full animate-spin" />
-                  <span className="text-[#848e9c] text-xs">Connecting to Binance…</span>
+                  <span className="text-[#848e9c] text-xs">Connecting…</span>
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto">

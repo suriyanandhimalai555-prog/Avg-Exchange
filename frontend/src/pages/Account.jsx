@@ -24,6 +24,7 @@ const Account = () => {
   const [documentType,   setDocumentType]   = useState('passport');
   const [documentNumber, setDocumentNumber] = useState('');
   const [file,           setFile]           = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0); // 0-100
 
   // Change-password state
   const [pwCurrent,  setPwCurrent]  = useState('');
@@ -45,29 +46,53 @@ const Account = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setUploadProgress(0);
+
+    if (!file) {
+      setError('Please select a document to upload.');
+      return;
+    }
+
     setLoading(true);
-
-    const formData = new FormData();
-    formData.append('full_name',       fullName);
-    formData.append('date_of_birth',   dob);
-    formData.append('document_type',   documentType);
-    formData.append('document_number', documentNumber);
-    if (file) formData.append('document', file);
-
     try {
-      const res = await fetch(`${API_URL}/api/kyc/submit`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData,
+      // Step 1: Get a presigned S3 PUT URL from our backend
+      const urlRes = await fetch(
+        `${API_URL}/api/kyc/upload-url?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type)}`,
+        { credentials: 'include' }
+      );
+      const { uploadUrl, key, error: urlErr } = await urlRes.json();
+      if (!urlRes.ok) throw new Error(urlErr || 'Failed to get upload URL');
+
+      // Step 2: Upload the file directly to S3 (never touches our server)
+      setUploadProgress(10);
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || 'Submission failed. Please try again.');
-      } else {
-        setKycStatus('pending');
-      }
-    } catch {
-      setError('Network error. Please check your connection and try again.');
+      if (!uploadRes.ok) throw new Error('File upload to S3 failed');
+      setUploadProgress(80);
+
+      // Step 3: Submit the KYC form with the S3 key
+      const submitRes = await fetch(`${API_URL}/api/kyc/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          full_name:       fullName,
+          date_of_birth:   dob,
+          document_type:   documentType,
+          document_number: documentNumber,
+          document_key:    key,
+        }),
+      });
+      const data = await submitRes.json();
+      if (!submitRes.ok) throw new Error(data.error || 'Submission failed');
+
+      setUploadProgress(100);
+      setKycStatus('pending');
+    } catch (err) {
+      setError(err.message || 'Submission failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -246,7 +271,21 @@ const Account = () => {
                         hover:file:bg-[#00D68F]/20 cursor-pointer"
                     />
                     <p className="text-xs text-gray-500 mt-3">PNG, JPG, or PDF — max 5 MB</p>
-                    {file && <p className="text-xs text-[#00D68F] mt-1">{file.name}</p>}
+                    {file && <p className="text-xs text-[#00D68F] mt-1">{file.name} ({(file.size / 1024).toFixed(0)} KB)</p>}
+                    {loading && uploadProgress > 0 && (
+                      <div className="mt-3 w-full">
+                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                          <span>{uploadProgress < 80 ? 'Uploading to S3…' : uploadProgress < 100 ? 'Submitting…' : 'Done!'}</span>
+                          <span>{uploadProgress}%</span>
+                        </div>
+                        <div className="w-full bg-white/10 rounded-full h-1.5">
+                          <div
+                            className="bg-[#00D68F] h-1.5 rounded-full transition-all duration-300"
+                            style={{ width: `${uploadProgress}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 

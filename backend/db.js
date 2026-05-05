@@ -5,7 +5,12 @@ const Decimal  = require('decimal.js');
 // Full precision — no exponential notation, 28 significant digits
 Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP, toExpPos: 28, toExpNeg: -28 });
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 30,                      // support high concurrency (500 users)
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+});
 
 pool.query('SELECT NOW()', (err) => {
   if (err) console.error('❌ DB Error:', err.message);
@@ -86,13 +91,35 @@ const unlockFunds = async (userId, currency, amount) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT locked_balance
+         FROM balances
+        WHERE user_id = $1 AND currency = $2
+        FOR UPDATE`,
+      [userId, currency]
+    );
+
+    if (rows.length === 0) {
+      throw new Error(`No ${currency} balance found for user ${userId}`);
+    }
+
+    const locked = new Decimal(rows[0].locked_balance);
+    // Only unlock what is actually locked — prevents money creation
+    const toUnlock = Decimal.min(D, locked);
+
+    if (toUnlock.lte(0)) {
+      await client.query('COMMIT');
+      return;
+    }
+
     await client.query(
       `UPDATE balances
-          SET locked_balance    = GREATEST(locked_balance    - $1, 0),
+          SET locked_balance    = locked_balance    - $1,
               available_balance = available_balance + $1,
               updated_at        = NOW()
         WHERE user_id = $2 AND currency = $3`,
-      [D.toFixed(10), userId, currency]
+      [toUnlock.toFixed(10), userId, currency]
     );
     await client.query('COMMIT');
   } catch (err) {
@@ -143,10 +170,10 @@ const settleFill = async (client, {
   // Helper: apply one user's balance changes within the deadlock-safe ordering
   const applyBalance = async (uid) => {
     if (uid === buyerId) {
-      // Buyer: deduct locked quote, return refund to available, credit base
+      // Buyer: deduct locked quote (capped to actual locked), return refund to available, credit base
       await client.query(
         `UPDATE balances
-            SET locked_balance    = GREATEST(locked_balance - $1, 0),
+            SET locked_balance    = locked_balance - LEAST($1, locked_balance),
                 available_balance = available_balance + $2,
                 updated_at        = NOW()
           WHERE user_id = $3 AND currency = $4`,
@@ -161,10 +188,10 @@ const settleFill = async (client, {
         [buyerId, baseCurrency, dFillQty.toFixed(10)]
       );
     } else {
-      // Seller: deduct locked base, credit quote to available
+      // Seller: deduct locked base (capped to actual locked), credit quote to available
       await client.query(
         `UPDATE balances
-            SET locked_balance = GREATEST(locked_balance - $1, 0),
+            SET locked_balance = locked_balance - LEAST($1, locked_balance),
                 updated_at     = NOW()
           WHERE user_id = $2 AND currency = $3`,
         [dFillQty.toFixed(10), sellerId, baseCurrency]

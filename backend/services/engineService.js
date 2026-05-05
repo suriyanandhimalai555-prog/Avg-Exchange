@@ -291,36 +291,71 @@ class EngineService {
 
   /**
    * Cancels an open order: removes it from memory and unlocks reserved funds.
+   * Uses a DB transaction with FOR UPDATE to prevent race conditions with concurrent fills.
    */
   async cancelOrder(orderId) {
-    const { rows } = await db.query(
-      'SELECT id, user_id, pair, side, price, remaining_quantity, status FROM orders WHERE id = $1',
-      [orderId]
-    );
-    if (rows.length === 0) throw new Error('Order not found');
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
 
-    const order = rows[0];
-    if (order.status === 'filled' || order.status === 'cancelled') {
-      // Already in a terminal state — idempotent, nothing to do
-      return { cancelled: false, orderId, reason: order.status };
+      // Lock the order row to prevent concurrent fill settlement
+      const { rows } = await client.query(
+        'SELECT id, user_id, pair, side, price, remaining_quantity, status FROM orders WHERE id = $1 FOR UPDATE',
+        [orderId]
+      );
+      if (rows.length === 0) {
+        await client.query('ROLLBACK');
+        throw new Error('Order not found');
+      }
+
+      const order = rows[0];
+      if (order.status === 'filled' || order.status === 'cancelled') {
+        await client.query('ROLLBACK');
+        return { cancelled: false, orderId, reason: order.status };
+      }
+
+      const { baseCurrency, quoteCurrency } = this._parsePair(order.pair);
+      const book = this._getBook(order.pair);
+
+      try { book.cancel(orderId); } catch (_) {}
+
+      // Release the locked funds back to available (Decimal to avoid floating-point drift)
+      const dRemaining   = new Decimal(order.remaining_quantity);
+      const lockCurrency = order.side === 'buy' ? quoteCurrency : baseCurrency;
+      const lockAmount   = order.side === 'buy'
+        ? new Decimal(order.price).mul(dRemaining).toFixed(10)
+        : dRemaining.toFixed(10);
+
+      // Unlock within the same transaction — use inline SQL instead of standalone unlockFunds
+      const balRow = await client.query(
+        `SELECT locked_balance FROM balances WHERE user_id = $1 AND currency = $2 FOR UPDATE`,
+        [order.user_id, lockCurrency]
+      );
+      if (balRow.rows.length > 0) {
+        const locked = new Decimal(balRow.rows[0].locked_balance);
+        const toUnlock = Decimal.min(new Decimal(lockAmount), locked);
+        if (toUnlock.gt(0)) {
+          await client.query(
+            `UPDATE balances
+                SET locked_balance    = locked_balance    - $1,
+                    available_balance = available_balance + $1,
+                    updated_at        = NOW()
+              WHERE user_id = $2 AND currency = $3`,
+            [toUnlock.toFixed(10), order.user_id, lockCurrency]
+          );
+        }
+      }
+
+      await client.query(`UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [orderId]);
+      await client.query('COMMIT');
+
+      return { cancelled: true, orderId };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
-
-    const { baseCurrency, quoteCurrency } = this._parsePair(order.pair);
-    const book = this._getBook(order.pair);
-
-    try { book.cancel(orderId); } catch (_) {}
-
-    // Release the locked funds back to available (Decimal to avoid floating-point drift)
-    const dRemaining   = new Decimal(order.remaining_quantity);
-    const lockCurrency = order.side === 'buy' ? quoteCurrency : baseCurrency;
-    const lockAmount   = order.side === 'buy'
-      ? new Decimal(order.price).mul(dRemaining).toFixed(10)
-      : dRemaining.toFixed(10);
-
-    await db.unlockFunds(order.user_id, lockCurrency, lockAmount);
-    await db.query(`UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [orderId]);
-
-    return { cancelled: true, orderId };
   }
 }
 

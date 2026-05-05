@@ -12,10 +12,10 @@ const savedUser = (() => {
 // Fixes stale localStorage (e.g. missing `id` from old sessions).
 export const refreshUser = createAsyncThunk(
   'auth/refreshUser',
-  async (_, { rejectWithValue: reject }) => {
+  async (_, { rejectWithValue }) => {
     try {
       const res = await fetch(`${API_URL}/api/user/me`, { credentials: 'include' });
-      if (!res.ok) return reject(null); // not logged in — ignore silently
+      if (!res.ok) return rejectWithValue(null); // not logged in — ignore silently
       const data = await res.json();
       const user = {
         id:           data.id,

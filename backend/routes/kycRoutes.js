@@ -1,36 +1,41 @@
-const express = require('express');
-const path = require('path');
-const multer = require('multer');
+const express    = require('express');
+const path       = require('path');
 const requireAuth = require('../middleware/requireAuth');
 const { submitKyc, getKycStatus } = require('../controllers/kycController');
+const s3         = require('../services/s3Service');
 
 const router = express.Router();
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(__dirname, '../uploads/kyc')),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `kyc_${req.user.id}_${Date.now()}${ext}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
-  fileFilter: (_req, file, cb) => {
-    const allowed = /jpeg|jpg|png|pdf/;
-    const ok = allowed.test(path.extname(file.originalname).toLowerCase())
-            && allowed.test(file.mimetype);
-    ok ? cb(null, true) : cb(new Error('Only PNG, JPG, and PDF files are allowed'));
-  },
-});
-
 router.use(requireAuth);
 
 // GET /api/kyc/status
 router.get('/status', getKycStatus);
 
-// POST /api/kyc/submit  (multipart/form-data)
-router.post('/submit', upload.single('document'), submitKyc);
+/**
+ * GET /api/kyc/upload-url?filename=passport.jpg&contentType=image/jpeg
+ *
+ * Returns a short-lived presigned S3 PUT URL + the S3 key.
+ * The frontend PUTs the file directly to S3, then sends the key to /submit.
+ * Our server never receives the file bytes.
+ */
+router.get('/upload-url', async (req, res, next) => {
+  try {
+    const { filename, contentType } = req.query;
+
+    if (!filename || !contentType) {
+      return res.status(400).json({ error: 'filename and contentType query params are required' });
+    }
+
+    const ext = path.extname(filename).toLowerCase() || '.bin';
+    const key = `kyc/${req.user.id}/${Date.now()}${ext}`;
+
+    const uploadUrl = await s3.getUploadUrl(key, contentType);
+    res.json({ uploadUrl, key });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/kyc/submit — JSON body (no multipart; file is already in S3)
+router.post('/submit', submitKyc);
 
 module.exports = router;

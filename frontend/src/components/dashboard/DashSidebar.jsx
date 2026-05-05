@@ -6,7 +6,7 @@ import {
   LuTrendingUp, LuPercent, LuWallet,
   LuChevronLeft, LuChevronRight, LuSettings,
 } from 'react-icons/lu';
-import LogoWebp from '../../assets/kucoin-logo.webp';
+import LogoWebp from '../../assets/avg-exchange-logo.webp';
 
 const NAV = [
   { icon: LuLayoutDashboard, label: 'Dashboard', to: '/dashboard' },

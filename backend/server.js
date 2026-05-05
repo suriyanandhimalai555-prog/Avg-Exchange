@@ -1,9 +1,19 @@
 require('dotenv').config();
+
+// ── Startup guards ──────────────────────────────────────────────
+if (!process.env.SECRET) {
+  console.error('FATAL: process.env.SECRET is not set. Refusing to start.');
+  process.exit(1);
+}
+
 const http   = require('http');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
 const { Server: SocketServer } = require('socket.io');
+const jwt = require('jsonwebtoken');
+const cookie = require('cookie');
 const { errorHandler } = require('./middleware/errorMiddleware');
 const engine        = require('./services/engineService');
 const binanceStream = require('./services/binanceStreamService');
@@ -26,6 +36,7 @@ const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(o => o.trim())
   : ['http://localhost:5173'];
 
+app.use(helmet({ contentSecurityPolicy: false })); // security headers
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 
 // express.json() with a verify hook — the ONLY correct way to capture the raw
@@ -43,10 +54,31 @@ const io = new SocketServer(server, {
   cors: { origin: allowedOrigins, credentials: true },
 });
 
+// ── Socket.io authentication middleware ───────────────────────
+io.use((socket, next) => {
+  try {
+    const cookies = cookie.parse(socket.handshake.headers.cookie || '');
+    const token = cookies.token;
+    if (!token) return next(); // allow unauthenticated for public market data
+    const payload = jwt.verify(token, process.env.SECRET);
+    socket.userId = payload.id;
+  } catch (_) {
+    // Invalid token — allow connection for public data, just don't authenticate
+  }
+  next();
+});
+
 io.on('connection', (socket) => {
-  // Client sends { userId } after authentication so we can target them
+  // Auto-join user's private channel based on authenticated JWT
+  if (socket.userId) {
+    socket.join(`user:${socket.userId}`);
+  }
+
+  // Legacy subscribe — only allowed if userId matches the authenticated session
   socket.on('subscribe', ({ userId }) => {
-    if (userId) socket.join(`user:${userId}`);
+    if (userId && socket.userId && socket.userId === userId) {
+      socket.join(`user:${userId}`);
+    }
   });
 
   socket.on('disconnect', () => {});
@@ -110,12 +142,13 @@ async function purgeStaleBotOrders() {
   if (stale.length === 0) return;
 
   // Unlock reserved funds for every stale order before cancelling
+  const Decimal = require('decimal.js');
   for (const o of stale) {
     const [baseCurrency, quoteCurrency] = o.pair.split('/');
     const lockCurrency = o.side === 'buy' ? quoteCurrency : baseCurrency;
     const lockAmount   = o.side === 'buy'
-      ? parseFloat(o.price) * parseFloat(o.remaining_quantity)
-      : parseFloat(o.remaining_quantity);
+      ? new Decimal(o.price).mul(o.remaining_quantity).toFixed(10)
+      : new Decimal(o.remaining_quantity).toFixed(10);
 
     await db.unlockFunds(botId, lockCurrency, lockAmount).catch((err) => {
       console.error(`[startup] Failed to unlock funds for stale bot order ${o.id}:`, err.message);

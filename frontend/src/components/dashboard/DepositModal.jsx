@@ -53,17 +53,21 @@ const OxaPayStatus = ({ trackId, currency, amount, payLink, onPaid, onExpired })
   const [status,   setStatus]   = useState('Waiting');
   const [attempts, setAttempts] = useState(0);
   const timerRef = useRef(null);
+  const onPaidRef = useRef(onPaid);
+  const onExpiredRef = useRef(onExpired);
+  onPaidRef.current = onPaid;
+  onExpiredRef.current = onExpired;
 
   useEffect(() => {
+    let count = 0;
     timerRef.current = setInterval(async () => {
-      setAttempts(prev => {
-        if (prev >= POLL_MAX) {
-          clearInterval(timerRef.current);
-          onExpired();
-          return prev;
-        }
-        return prev + 1;
-      });
+      count++;
+      if (count >= POLL_MAX) {
+        clearInterval(timerRef.current);
+        onExpiredRef.current();
+        return;
+      }
+      setAttempts(count);
 
       try {
         const { data } = await axios.get(
@@ -73,10 +77,10 @@ const OxaPayStatus = ({ trackId, currency, amount, payLink, onPaid, onExpired })
         setStatus(data.status);
         if (data.status === 'Paid') {
           clearInterval(timerRef.current);
-          onPaid();
+          onPaidRef.current();
         } else if (data.status === 'Expired' || data.status === 'Error') {
           clearInterval(timerRef.current);
-          onExpired();
+          onExpiredRef.current();
         }
       } catch (_) {}
     }, POLL_INTERVAL_MS);

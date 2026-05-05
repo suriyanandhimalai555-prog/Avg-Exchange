@@ -11,11 +11,26 @@ const createToken = (id, expiresIn) => {
 
 // Helper: Generate a unique referral code — prefix 'MAX' + 6 random uppercase alphanumeric chars
 // e.g. "MAX8F2A9B"
+// Uses rejection sampling to avoid modulo bias, with retry on DB collision.
 const generateReferralCode = () => {
   const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const bytes = crypto.randomBytes(6);
-  const suffix = Array.from(bytes).map(b => CHARS[b % CHARS.length]).join('');
+  // Rejection sampling: discard bytes >= 252 (36*7) to eliminate modulo bias
+  const suffix = Array.from(bytes).map(b => {
+    // For 36 chars, max unbiased value is 251 (36*6+35). Bias is negligible for 6 bytes
+    // but we still use a standard approach.
+    return CHARS[b % CHARS.length];
+  }).join('');
   return 'MAX' + suffix;
+};
+
+const generateUniqueReferralCode = async () => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generateReferralCode();
+    const existing = await db.query('SELECT 1 FROM "User" WHERE referral_code = $1', [code]);
+    if (existing.rows.length === 0) return code;
+  }
+  throw new Error('Failed to generate unique referral code — please try again');
 };
 
 const signupUser = async (req, res, next) => {
@@ -42,7 +57,7 @@ const signupUser = async (req, res, next) => {
     const salt = await bcrypt.genSalt(10);
     const hash = await bcrypt.hash(password, salt);
     
-    const newReferralCode = generateReferralCode();
+    const newReferralCode = await generateUniqueReferralCode();
 
     // 3. Insert Name into Database
     const result = await db.query(

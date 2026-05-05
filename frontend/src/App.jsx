@@ -39,6 +39,10 @@ function AppShell() {
             element={user ? <Wallet /> : <Navigate to="/login" replace />}
           />
           <Route
+            path="/wallet/:tab"
+            element={user ? <Wallet /> : <Navigate to="/login" replace />}
+          />
+          <Route
             path="/account"
             element={user ? <Account /> : <Navigate to="/login" replace />}
           />
@@ -48,6 +52,10 @@ function AppShell() {
           />
           <Route
             path="/admin"
+            element={user?.isAdmin ? <Admin /> : <Navigate to="/" replace />}
+          />
+          <Route
+            path="/admin/:tab"
             element={user?.isAdmin ? <Admin /> : <Navigate to="/" replace />}
           />
 

@@ -6,6 +6,7 @@
  * BitGo) when you are ready to wire live withdrawals.
  */
 
+const Decimal = require('decimal.js');
 const db = require('../db');
 
 /**
@@ -15,7 +16,7 @@ const db = require('../db');
  *
  * @param {number} userId
  * @param {string} currency   e.g. 'BTC', 'USDT'
- * @param {number} amount
+ * @param {number|string} amount
  * @param {string} toAddress  destination wallet address
  * @returns {{ success: boolean, txHash: string|null, message: string }}
  */
@@ -23,7 +24,9 @@ const processWithdrawal = async (userId, currency, amount, toAddress) => {
   if (!userId || !currency || !amount || !toAddress) {
     throw new Error('userId, currency, amount, and toAddress are required');
   }
-  if (amount <= 0) {
+
+  const dAmount = new Decimal(amount);
+  if (dAmount.lte(0)) {
     throw new Error('Withdrawal amount must be greater than zero');
   }
 
@@ -40,7 +43,7 @@ const processWithdrawal = async (userId, currency, amount, toAddress) => {
       [userId, currency]
     );
 
-    if (rows.length === 0 || parseFloat(rows[0].available_balance) < amount) {
+    if (rows.length === 0 || new Decimal(rows[0].available_balance).lt(dAmount)) {
       throw new Error(`Insufficient ${currency} balance for withdrawal`);
     }
 
@@ -49,7 +52,7 @@ const processWithdrawal = async (userId, currency, amount, toAddress) => {
           SET available_balance = available_balance - $1,
               updated_at        = NOW()
         WHERE user_id = $2 AND currency = $3`,
-      [amount, userId, currency]
+      [dAmount.toFixed(10), userId, currency]
     );
 
     await client.query('COMMIT');

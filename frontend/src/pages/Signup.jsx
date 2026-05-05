@@ -114,7 +114,7 @@ const Signup = () => {
                 className={s.input}
                 onChange={(e) => setReferralCode(e.target.value)} 
                 value={referralCode} 
-                placeholder="e.g. AVG-X7Z9"
+                placeholder="e.g. MAX8F2A9B"
               />
             </div>
 

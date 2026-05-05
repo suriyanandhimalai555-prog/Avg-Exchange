@@ -1,16 +1,19 @@
 // frontend/src/pages/Admin.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { io } from 'socket.io-client';
 import { useSelector } from 'react-redux';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import API_URL from '../config/api';
 import {
   LuUsers, LuPackage, LuRepeat2, LuShieldCheck,
   LuCircleCheck, LuCircleX, LuRefreshCw, LuTriangleAlert,
   LuFileText, LuShield, LuShieldOff, LuCirclePlus,
+  LuChevronLeft, LuChevronRight,
 } from 'react-icons/lu';
 
 const TABS = ['Overview', 'KYC', 'Users', 'Orders'];
+const ORDERS_LIMIT = 50;
 
 // ── Avatar: coloured circle with initials ──────────────────────
 const AVATAR_COLORS = [
@@ -73,6 +76,61 @@ const ErrorRow = ({ cols }) => (
   </tr>
 );
 
+// ── Pagination controls ───────────────────────────────────────
+const Pagination = ({ page, pages, total, limit, onPage }) => {
+  if (pages <= 1) return null;
+  const from = (page - 1) * limit + 1;
+  const to   = Math.min(page * limit, total);
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-t border-[#2b3139] bg-[#1e2329]">
+      <span className="text-[#848e9c] text-xs">
+        {from}–{to} of {total.toLocaleString()} orders
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onPage(page - 1)}
+          disabled={page === 1}
+          className="p-1.5 rounded-lg hover:bg-[#2b3139] text-[#848e9c] hover:text-[#eaecef] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <LuChevronLeft size={15} />
+        </button>
+        {/* Page number pills — show at most 7 */}
+        {Array.from({ length: pages }, (_, i) => i + 1)
+          .filter(p => p === 1 || p === pages || Math.abs(p - page) <= 2)
+          .reduce((acc, p, idx, arr) => {
+            if (idx > 0 && p - arr[idx - 1] > 1) acc.push('…');
+            acc.push(p);
+            return acc;
+          }, [])
+          .map((p, idx) =>
+            p === '…' ? (
+              <span key={`ellipsis-${idx}`} className="px-1 text-[#848e9c] text-xs">…</span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onPage(p)}
+                className={`w-7 h-7 rounded-lg text-xs font-semibold transition-colors ${
+                  p === page
+                    ? 'bg-[#f0b90b] text-black'
+                    : 'text-[#848e9c] hover:bg-[#2b3139] hover:text-[#eaecef]'
+                }`}
+              >
+                {p}
+              </button>
+            )
+          )}
+        <button
+          onClick={() => onPage(page + 1)}
+          disabled={page === pages}
+          className="p-1.5 rounded-lg hover:bg-[#2b3139] text-[#848e9c] hover:text-[#eaecef] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          <LuChevronRight size={15} />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 // ── Add-balance modal ─────────────────────────────────────────
 const AddBalanceModal = ({ target, onClose, onSuccess }) => {
   const [currency, setCurrency] = useState('USDT');
@@ -126,13 +184,27 @@ const AddBalanceModal = ({ target, onClose, onSuccess }) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// Map URL param → display tab name
+const TAB_FROM_PARAM = {
+  overview: 'Overview',
+  kyc:      'KYC',
+  users:    'Users',
+  orders:   'Orders',
+};
+
 const Admin = () => {
-  const user = useSelector((s) => s.auth.user);
-  const [tab,    setTab]    = useState('Overview');
+  const user     = useSelector((s) => s.auth.user);
+  const navigate  = useNavigate();
+  const { tab: tabParam } = useParams();
+  const tab = TAB_FROM_PARAM[tabParam] || 'Overview';
+
+  const setTab = (t) => navigate(`/admin/${t.toLowerCase()}`, { replace: true });
   const [stats,  setStats]  = useState(null);
   const [kyc,    setKyc]    = useState([]);
   const [users,  setUsers]  = useState([]);
   const [orders, setOrders] = useState([]);
+  const [ordersMeta, setOrdersMeta] = useState({ total: 0, pages: 1 });
+  const [ordersPage, setOrdersPage] = useState(1);
 
   const [kycError,    setKycError]    = useState(false);
   const [usersError,  setUsersError]  = useState(false);
@@ -143,8 +215,15 @@ const Admin = () => {
   const [rejectNote,   setRejectNote]   = useState('');
   const [rejectTarget, setRejectTarget] = useState(null);
   const [balanceTarget, setBalanceTarget] = useState(null);
+  const [liveIndicator, setLiveIndicator] = useState(false);
 
-  if (!user?.isAdmin) return <Navigate to="/" replace />;
+  // Refs to access current state inside socket callback without stale closure
+  const tabRef        = useRef(tab);
+  const ordersPageRef = useRef(ordersPage);
+  const lastRefresh   = useRef(0);
+
+  tabRef.current        = tab;
+  ordersPageRef.current = ordersPage;
 
   const flash = (msg, type = 'success') => {
     setFeedback({ msg, type });
@@ -174,26 +253,67 @@ const Admin = () => {
     } catch (_) { setUsersError(true); }
   }, []);
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (page = 1) => {
     setOrdersError(false);
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/orders`, { withCredentials: true });
-      setOrders(data);
+      const { data } = await axios.get(
+        `${API_URL}/api/admin/orders?page=${page}&limit=${ORDERS_LIMIT}`,
+        { withCredentials: true }
+      );
+      setOrders(data.orders);
+      setOrdersMeta({ total: data.total, pages: data.pages });
     } catch (_) { setOrdersError(true); }
   }, []);
 
+  // Initial data load when tab changes
   useEffect(() => {
+    if (!user?.isAdmin) return;
     fetchStats();
     if (tab === 'KYC')    fetchKyc();
     if (tab === 'Users')  fetchUsers();
-    if (tab === 'Orders') fetchOrders();
-  }, [tab]);
+    if (tab === 'Orders') { setOrdersPage(1); fetchOrders(1); }
+  }, [tab, user, fetchStats, fetchKyc, fetchUsers, fetchOrders]);
+
+  // ── Socket: auto-update on admin:refresh ─────────────────
+  useEffect(() => {
+    if (!user?.isAdmin) return;
+    const socket = io(API_URL, { withCredentials: true });
+
+    socket.on('admin:refresh', () => {
+      // Pulse the live indicator
+      setLiveIndicator(true);
+      setTimeout(() => setLiveIndicator(false), 800);
+
+      // Throttle: fire immediately on the first event, then at most once every 3s.
+      // Unlike debounce, this is never cancelled by continuous bot traffic.
+      const now = Date.now();
+      if (now - lastRefresh.current < 3000) return;
+      lastRefresh.current = now;
+
+      fetchStats();
+      const currentTab  = tabRef.current;
+      const currentPage = ordersPageRef.current;
+      if (currentTab === 'Orders') fetchOrders(currentPage);
+      if (currentTab === 'KYC')    fetchKyc();
+      if (currentTab === 'Users')  fetchUsers();
+    });
+
+    return () => socket.disconnect();
+  }, [user, fetchStats, fetchKyc, fetchUsers, fetchOrders]);
+
+  // Guard — must be AFTER all hooks
+  if (!user?.isAdmin) return <Navigate to="/" replace />;
 
   const handleRefresh = () => {
     fetchStats();
     if (tab === 'KYC')    fetchKyc();
     if (tab === 'Users')  fetchUsers();
-    if (tab === 'Orders') fetchOrders();
+    if (tab === 'Orders') fetchOrders(ordersPage);
+  };
+
+  const handleOrdersPage = (newPage) => {
+    setOrdersPage(newPage);
+    fetchOrders(newPage);
   };
 
   const handleApprove = async (userId) => {
@@ -240,12 +360,19 @@ const Admin = () => {
             <h1 className="text-xl font-bold text-[#eaecef]">Admin Panel</h1>
             <p className="text-[#848e9c] text-sm mt-0.5">Exchange management dashboard</p>
           </div>
-          <button
-            onClick={handleRefresh}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#2b3139] hover:bg-[#363c45] text-[#848e9c] hover:text-[#eaecef] text-sm transition-colors"
-          >
-            <LuRefreshCw size={14} /> Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Live indicator */}
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full transition-colors duration-300 ${liveIndicator ? 'bg-[#0ecb81]' : 'bg-[#2b3139]'}`} />
+              <span className="text-[#848e9c] text-xs">Live</span>
+            </div>
+            <button
+              onClick={handleRefresh}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#2b3139] hover:bg-[#363c45] text-[#848e9c] hover:text-[#eaecef] text-sm transition-colors"
+            >
+              <LuRefreshCw size={14} /> Refresh
+            </button>
+          </div>
         </div>
 
         {/* Toast */}
@@ -488,52 +615,61 @@ const Admin = () => {
 
         {/* ── Orders ── */}
         {tab === 'Orders' && (
-          <div className="overflow-x-auto rounded-xl border border-[#2b3139]">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-[#1e2329] text-[#848e9c] text-[11px] uppercase tracking-wide">
-                  <th className="px-4 py-3 text-left">ID</th>
-                  <th className="px-4 py-3 text-left">User</th>
-                  <th className="px-4 py-3 text-left">Pair</th>
-                  <th className="px-4 py-3 text-left">Side</th>
-                  <th className="px-4 py-3 text-right">Price</th>
-                  <th className="px-4 py-3 text-right">Qty</th>
-                  <th className="px-4 py-3 text-left">Status</th>
-                  <th className="px-4 py-3 text-left">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ordersError
-                  ? <ErrorRow cols={8} />
-                  : orders.length === 0
-                    ? <EmptyRow cols={8} msg="No orders yet" />
-                    : orders.map(o => (
-                        <tr key={o.id} className="border-t border-[#2b3139] hover:bg-[#1e2329]/50">
-                          <td className="px-4 py-3 text-[#848e9c] text-xs font-mono">#{o.id}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-2">
-                              <Avatar name={o.name} email={o.email} size={6} />
-                              <div>
-                                <div className="text-[#eaecef] text-xs">{o.name || o.email}</div>
-                                <div className="text-[#848e9c] text-[10px]">{o.email}</div>
+          <div className="rounded-xl border border-[#2b3139] overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-[#1e2329] text-[#848e9c] text-[11px] uppercase tracking-wide">
+                    <th className="px-4 py-3 text-left">ID</th>
+                    <th className="px-4 py-3 text-left">User</th>
+                    <th className="px-4 py-3 text-left">Pair</th>
+                    <th className="px-4 py-3 text-left">Side</th>
+                    <th className="px-4 py-3 text-right">Price</th>
+                    <th className="px-4 py-3 text-right">Qty</th>
+                    <th className="px-4 py-3 text-left">Status</th>
+                    <th className="px-4 py-3 text-left">Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ordersError
+                    ? <ErrorRow cols={8} />
+                    : orders.length === 0
+                      ? <EmptyRow cols={8} msg="No orders yet" />
+                      : orders.map(o => (
+                          <tr key={o.id} className="border-t border-[#2b3139] hover:bg-[#1e2329]/50">
+                            <td className="px-4 py-3 text-[#848e9c] text-xs font-mono">#{o.id}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2">
+                                <Avatar name={o.name} email={o.email} size={6} />
+                                <div>
+                                  <div className="text-[#eaecef] text-xs">{o.name || o.email}</div>
+                                  <div className="text-[#848e9c] text-[10px]">{o.email}</div>
+                                </div>
                               </div>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 text-[#eaecef] font-mono text-xs font-bold">{o.pair}</td>
-                          <td className="px-4 py-3">
-                            <span className={`text-xs font-bold ${o.side === 'buy' ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
-                              {o.side?.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-right text-[#eaecef] font-mono text-xs">${parseFloat(o.price || 0).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-right text-[#eaecef] font-mono text-xs">{parseFloat(o.quantity).toFixed(4)}</td>
-                          <td className="px-4 py-3"><Badge status={o.status} /></td>
-                          <td className="px-4 py-3 text-[#848e9c] text-xs">{fmtDate(o.created_at)}</td>
-                        </tr>
-                      ))
-                }
-              </tbody>
-            </table>
+                            </td>
+                            <td className="px-4 py-3 text-[#eaecef] font-mono text-xs font-bold">{o.pair}</td>
+                            <td className="px-4 py-3">
+                              <span className={`text-xs font-bold ${o.side === 'buy' ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
+                                {o.side?.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-[#eaecef] font-mono text-xs">${parseFloat(o.price || 0).toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right text-[#eaecef] font-mono text-xs">{parseFloat(o.quantity).toFixed(4)}</td>
+                            <td className="px-4 py-3"><Badge status={o.status} /></td>
+                            <td className="px-4 py-3 text-[#848e9c] text-xs">{fmtDate(o.created_at)}</td>
+                          </tr>
+                        ))
+                  }
+                </tbody>
+              </table>
+            </div>
+            <Pagination
+              page={ordersPage}
+              pages={ordersMeta.pages}
+              total={ordersMeta.total}
+              limit={ORDERS_LIMIT}
+              onPage={handleOrdersPage}
+            />
           </div>
         )}
 

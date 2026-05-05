@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { fetchNavbarBalance } from '../features/balanceSlice';
 import axios from 'axios';
@@ -27,12 +27,23 @@ const SUPPORTED_COINS = [
 
 const TABS = ['Assets', 'Open Orders', 'Trade History'];
 
+const TAB_FROM_PARAM = {
+  assets:  'Assets',
+  orders:  'Open Orders',
+  history: 'Trade History',
+};
+
 const Wallet = () => {
   const { user } = useSelector((s) => s.auth);
   const dispatch = useDispatch();
   const navigate = useNavigate();
+  const { tab: tabParam } = useParams();
 
-  const [activeTab,   setActiveTab]   = useState('Assets');
+  const activeTab    = TAB_FROM_PARAM[tabParam] || 'Assets';
+  const setActiveTab = (t) => {
+    const param = Object.entries(TAB_FROM_PARAM).find(([, v]) => v === t)?.[0] || 'assets';
+    navigate(`/wallet/${param}`, { replace: true });
+  };
   const [balances,    setBalances]    = useState({});
   const [orders,      setOrders]      = useState([]);
   const [trades,      setTrades]      = useState([]);

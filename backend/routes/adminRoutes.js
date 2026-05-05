@@ -1,8 +1,9 @@
 // backend/routes/adminRoutes.js
-const express = require('express');
-const requireAuth = require('../middleware/requireAuth');
+const express      = require('express');
+const requireAuth  = require('../middleware/requireAuth');
 const requireAdmin = require('../middleware/requireAdmin');
-const db = require('../db');
+const db           = require('../db');
+const s3           = require('../services/s3Service');
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -50,7 +51,7 @@ router.get('/kyc', async (req, res, next) => {
   try {
     const { rows } = await db.query(`
       SELECT k.user_id, k.full_name, k.date_of_birth, k.document_type,
-             k.document_number, k.status, k.submitted_at, k.reviewed_at,
+             k.document_number, k.document_path, k.status, k.submitted_at, k.reviewed_at,
              k.reviewer_note, u.email, u.name AS user_name
         FROM kyc_submissions k
         JOIN "User" u ON u.id = k.user_id
@@ -111,11 +112,15 @@ router.patch('/users/:userId/toggle-admin', async (req, res, next) => {
 });
 
 // POST /api/admin/users/:userId/add-balance
+const Decimal = require('decimal.js');
 router.post('/users/:userId/add-balance', async (req, res, next) => {
   const userId = parseInt(req.params.userId);
   const { currency, amount } = req.body;
-  const parsed = parseFloat(amount);
-  if (!userId || !currency || !parsed || parsed <= 0) {
+  let dAmount;
+  try { dAmount = new Decimal(amount); } catch (_) {
+    return res.status(400).json({ error: 'amount must be a valid number' });
+  }
+  if (!userId || !currency || dAmount.lte(0)) {
     return res.status(400).json({ error: 'userId, currency, and positive amount are required' });
   }
   try {
@@ -124,13 +129,13 @@ router.post('/users/:userId/add-balance', async (req, res, next) => {
        VALUES ($1, $2, $3)
        ON CONFLICT (user_id, currency)
        DO UPDATE SET available_balance = balances.available_balance + $3, updated_at = NOW()`,
-      [userId, currency.toUpperCase(), parsed]
+      [userId, currency.toUpperCase(), dAmount.toFixed(10)]
     );
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
-// GET /api/admin/kyc/:userId/document — serve the uploaded KYC document file
+// GET /api/admin/kyc/:userId/document — redirect to a signed S3 URL for the document
 router.get('/kyc/:userId/document', async (req, res, next) => {
   const userId = parseInt(req.params.userId);
   if (!userId) return res.status(400).json({ error: 'Invalid userId' });
@@ -139,26 +144,41 @@ router.get('/kyc/:userId/document', async (req, res, next) => {
       'SELECT document_path FROM kyc_submissions WHERE user_id = $1',
       [userId]
     );
-    if (!rows[0] || !rows[0].document_path) {
+    if (!rows[0]?.document_path) {
       return res.status(404).json({ error: 'No document found' });
     }
-    res.sendFile(rows[0].document_path);
+    const signedUrl = await s3.getDownloadUrl(rows[0].document_path);
+    res.redirect(signedUrl);
   } catch (err) { next(err); }
 });
 
-// GET /api/admin/orders — all recent orders
+// GET /api/admin/orders — paginated orders
+// Query params: ?page=1&limit=50
 router.get('/orders', async (req, res, next) => {
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
+  const offset = (page - 1) * limit;
   try {
-    const { rows } = await db.query(`
-      SELECT o.id, o.pair, o.side, o.type, o.price, o.quantity,
-             o.remaining_quantity, o.status, o.created_at,
-             u.email, u.name
-        FROM orders o
-        JOIN "User" u ON u.id = o.user_id
-       ORDER BY o.created_at DESC
-       LIMIT 500
-    `);
-    res.json(rows);
+    const [dataRes, countRes] = await Promise.all([
+      db.query(`
+        SELECT o.id, o.pair, o.side, o.type, o.price, o.quantity,
+               o.remaining_quantity, o.status, o.created_at,
+               u.email, u.name
+          FROM orders o
+          JOIN "User" u ON u.id = o.user_id
+         ORDER BY o.created_at DESC
+         LIMIT $1 OFFSET $2
+      `, [limit, offset]),
+      db.query('SELECT COUNT(*) FROM orders'),
+    ]);
+    const total = parseInt(countRes.rows[0].count);
+    res.json({
+      orders: dataRes.rows,
+      total,
+      page,
+      limit,
+      pages: Math.ceil(total / limit),
+    });
   } catch (err) { next(err); }
 });
 
