@@ -111,3 +111,34 @@ CREATE TABLE IF NOT EXISTS payment_invoices (
 
 CREATE INDEX IF NOT EXISTS idx_invoices_user_id  ON payment_invoices(user_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_track_id ON payment_invoices(track_id);
+
+-- ── deposit_addresses ─────────────────────────────────────────
+-- White-Label / Static Address approach.
+-- Each user gets one permanent blockchain address per currency+network,
+-- backed by an OxaPay slave merchant account.
+CREATE TABLE IF NOT EXISTS deposit_addresses (
+  id         SERIAL        PRIMARY KEY,
+  user_id    INTEGER       NOT NULL REFERENCES "User"(id) ON DELETE CASCADE,
+  currency   VARCHAR(10)   NOT NULL,   -- e.g. 'USDT'
+  network    VARCHAR(20)   NOT NULL,   -- e.g. 'TRX'
+  address    TEXT          NOT NULL UNIQUE,
+  slave_key  TEXT          NOT NULL,   -- OxaPay slave merchant API key (used for HMAC verify)
+  created_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, currency, network)
+);
+
+CREATE INDEX IF NOT EXISTS idx_deposit_addresses_user    ON deposit_addresses(user_id);
+CREATE INDEX IF NOT EXISTS idx_deposit_addresses_address ON deposit_addresses(address);
+
+-- ── static_deposit_log ────────────────────────────────────────
+-- Idempotency log for static-address deposits.
+-- Prevents double-credit if OxaPay fires the same webhook twice.
+CREATE TABLE IF NOT EXISTS static_deposit_log (
+  id         SERIAL        PRIMARY KEY,
+  user_id    INTEGER       NOT NULL REFERENCES "User"(id) ON DELETE CASCADE,
+  currency   VARCHAR(10)   NOT NULL,
+  amount     NUMERIC(28,10) NOT NULL,
+  address    TEXT          NOT NULL,
+  tx_id      TEXT          NOT NULL UNIQUE,   -- blockchain txId — idempotency key
+  created_at TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);

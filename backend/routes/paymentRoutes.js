@@ -19,6 +19,17 @@ const requireAuth = require('../middleware/requireAuth');
 const db          = require('../db');
 const oxapay      = require('../services/oxapayService');
 
+// Supported networks per currency for the static-address flow
+const STATIC_NETWORKS = {
+  USDT: ['TRX', 'ETH', 'BSC'],
+  BTC:  ['BTC'],
+  ETH:  ['ETH'],
+  BNB:  ['BSC'],
+  SOL:  ['SOL'],
+  TRX:  ['TRX'],
+  LTC:  ['LTC'],
+};
+
 const router = express.Router();
 
 const invoiceLimiter = rateLimit({
@@ -241,6 +252,168 @@ router.post('/callback', async (req, res) => {
     await creditInvoice(trackId);
   } catch (err) {
     console.error('[payment/callback] creditInvoice failed:', err.message);
+  }
+});
+
+// ── GET /api/payment/address/:currency/:network ──────────────────────────────
+// Returns (or creates) the permanent static deposit address for this user.
+// First call creates an OxaPay slave account + fetches the address (takes ~1-2s).
+// Every subsequent call for the same user/currency/network returns instantly from DB.
+router.get('/address/:currency/:network', requireAuth, async (req, res, next) => {
+  const currency = req.params.currency.toUpperCase();
+  const network  = req.params.network.toUpperCase();
+  const userId   = req.user.id;
+
+  if (!STATIC_NETWORKS[currency]?.includes(network)) {
+    return res.status(400).json({ error: `Unsupported currency/network: ${currency}/${network}` });
+  }
+
+  try {
+    // 1. Check if we already have an address for this user+currency+network
+    const existing = await db.query(
+      'SELECT address FROM deposit_addresses WHERE user_id=$1 AND currency=$2 AND network=$3',
+      [userId, currency, network]
+    );
+    if (existing.rows.length > 0) {
+      return res.json({ address: existing.rows[0].address, currency, network });
+    }
+
+    // 2. Create a new OxaPay slave merchant account for this user
+    const userRes = await db.query('SELECT name, email FROM "User" WHERE id=$1', [userId]);
+    const { name, email } = userRes.rows[0] ?? {};
+    const slaveName = `AvgExchange User #${userId} — ${name || email || 'unknown'}`;
+
+    const staticCallbackUrl = process.env.OXAPAY_STATIC_CALLBACK_URL
+      || `${process.env.APP_URL || 'http://localhost:4000'}/api/payment/static/callback`;
+
+    const slaveKey = await oxapay.createSlaveAccount(slaveName, staticCallbackUrl);
+
+    // 3. Get the permanent wallet address from the slave account
+    const address = await oxapay.getWalletAddress(slaveKey, currency, network);
+
+    // 4. Persist: address is now permanent for this user+currency+network
+    await db.query(
+      `INSERT INTO deposit_addresses (user_id, currency, network, address, slave_key)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id, currency, network) DO NOTHING`,
+      [userId, currency, network, address, slaveKey]
+    );
+
+    console.log(`[payment/static] Created address for user #${userId}: ${currency}/${network} → ${address}`);
+    res.json({ address, currency, network });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/payment/networks ────────────────────────────────────────────────
+// Returns supported currency→network map so the frontend stays in sync.
+router.get('/networks', (req, res) => {
+  res.json(STATIC_NETWORKS);
+});
+
+// ── POST /api/payment/static/callback ───────────────────────────────────────
+// OxaPay fires this when funds arrive at a static (slave) address.
+// Public — no requireAuth. HMAC verified with the slave's key.
+router.post('/static/callback', async (req, res) => {
+  res.sendStatus(200); // always respond immediately
+
+  const { body, rawBody } = req;
+  const receivedHmac = body?.hmac;
+
+  if (!receivedHmac) {
+    console.warn('[payment/static/callback] Missing HMAC — ignoring');
+    return;
+  }
+
+  const address = body?.address;
+  const rawStatus = body?.status ?? '';
+  const status  = rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1);
+
+  if (!address) {
+    console.warn('[payment/static/callback] Missing address — ignoring');
+    return;
+  }
+
+  // Look up the slave key (and user) by address
+  let row;
+  try {
+    const { rows } = await db.query(
+      'SELECT user_id, currency, slave_key FROM deposit_addresses WHERE address=$1',
+      [address]
+    );
+    if (rows.length === 0) {
+      console.warn(`[payment/static/callback] Unknown address ${address} — ignoring`);
+      return;
+    }
+    row = rows[0];
+  } catch (err) {
+    console.error('[payment/static/callback] DB lookup failed:', err.message);
+    return;
+  }
+
+  // Verify HMAC with slave key
+  if (!oxapay.verifySlaveHmac(rawBody, receivedHmac, row.slave_key)) {
+    console.warn('[payment/static/callback] HMAC mismatch — ignoring');
+    return;
+  }
+
+  if (status !== 'Paid') {
+    console.log(`[payment/static/callback] address=${address} status=${status} — not paid yet`);
+    return;
+  }
+
+  const amount   = body?.amount;
+  const currency = body?.currency ?? row.currency;
+  const txId     = body?.txId ?? body?.tx_id ?? '';
+
+  if (!amount || parseFloat(amount) <= 0) {
+    console.warn('[payment/static/callback] Zero or missing amount — ignoring');
+    return;
+  }
+
+  // Credit the user — use txId as idempotency key to prevent double-credit
+  try {
+    const dAmount = new Decimal(amount);
+    const client  = await db.getClient();
+    try {
+      await client.query('BEGIN');
+
+      // Check if this txId was already processed
+      const dup = await client.query(
+        `SELECT 1 FROM static_deposit_log WHERE tx_id=$1`,
+        [txId]
+      );
+      if (dup.rows.length > 0) {
+        await client.query('ROLLBACK');
+        console.log(`[payment/static/callback] txId=${txId} already credited — skipping`);
+        return;
+      }
+
+      await client.query(
+        `INSERT INTO balances (user_id, currency, available_balance)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, currency)
+         DO UPDATE SET available_balance = balances.available_balance + $3, updated_at = NOW()`,
+        [row.user_id, currency.toUpperCase(), dAmount.toFixed(10)]
+      );
+
+      await client.query(
+        `INSERT INTO static_deposit_log (user_id, currency, amount, address, tx_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [row.user_id, currency.toUpperCase(), dAmount.toFixed(10), address, txId]
+      );
+
+      await client.query('COMMIT');
+      console.log(`[payment/static/callback] ✅ Credited ${dAmount.toFixed(8)} ${currency} to user #${row.user_id} (txId=${txId})`);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('[payment/static/callback] Credit failed:', err.message);
   }
 });
 

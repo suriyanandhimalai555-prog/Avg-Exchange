@@ -130,4 +130,98 @@ const verifyCallbackHmac = (rawBody, receivedHmac) => {
   }
 };
 
-module.exports = { createInvoice, getPaymentStatus, verifyCallbackHmac };
+// ── createSlaveAccount ───────────────────────────────────────────────────────
+/**
+ * White-Label: create a slave (sub-merchant) account under your master merchant.
+ * Each user gets their own slave — funds received auto-sweep to master.
+ *
+ * OxaPay docs: POST /v1/merchants/add  (master API key required)
+ *
+ * @param {string} name        — display name for the slave (e.g. "AvgExchange User #42")
+ * @param {string} webhookUrl  — OxaPay will POST here when funds arrive
+ * @returns {string} slaveApiKey
+ */
+const createSlaveAccount = async (name, webhookUrl) => {
+  const { data } = await oxaClient.post('/v1/merchants/add', { name, webhook: webhookUrl });
+  console.log('[oxapay] createSlaveAccount response:', JSON.stringify(data));
+
+  if (data.status !== 200) {
+    throw new Error(`OxaPay createSlave error: ${data.message || JSON.stringify(data)}`);
+  }
+
+  const payload   = unwrap(data);
+  const slaveKey  = payload.apiKey ?? payload.api_key;
+  if (!slaveKey) {
+    throw new Error(`OxaPay returned no slave apiKey. Response: ${JSON.stringify(data)}`);
+  }
+  return slaveKey;
+};
+
+// ── getWalletAddress ─────────────────────────────────────────────────────────
+/**
+ * White-Label: get the permanent deposit address for a currency+network on a slave account.
+ * The address is static — users can re-use it for every deposit.
+ *
+ * OxaPay docs: POST /v1/wallets  (slave API key required)
+ *
+ * @param {string} slaveKey — slave merchant API key
+ * @param {string} currency — e.g. 'USDT'
+ * @param {string} network  — e.g. 'TRX'
+ * @returns {string} blockchain address
+ */
+const getWalletAddress = async (slaveKey, currency, network) => {
+  // Use a one-off axios instance with the slave key
+  const { data } = await axios.post(
+    `${OXAPAY_BASE}/v1/wallets`,
+    { currency, network },
+    {
+      timeout: 10_000,
+      headers: {
+        merchant_api_key: slaveKey,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+  console.log('[oxapay] getWalletAddress response:', JSON.stringify(data));
+
+  if (data.status !== 200) {
+    throw new Error(`OxaPay getWalletAddress error: ${data.message || JSON.stringify(data)}`);
+  }
+
+  const payload = unwrap(data);
+  const address = payload.address;
+  if (!address) {
+    throw new Error(`OxaPay returned no address. Response: ${JSON.stringify(data)}`);
+  }
+  return address;
+};
+
+// ── verifySlaveHmac ──────────────────────────────────────────────────────────
+/**
+ * Verify HMAC on a static-address callback using the slave's API key.
+ * Each slave fires callbacks signed with its own key.
+ */
+const verifySlaveHmac = (rawBody, receivedHmac, slaveKey) => {
+  if (!slaveKey || !rawBody || !receivedHmac) return false;
+  const expected = crypto
+    .createHmac('sha512', slaveKey)
+    .update(rawBody)
+    .digest('hex');
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expected,     'hex'),
+      Buffer.from(receivedHmac, 'hex'),
+    );
+  } catch {
+    return false;
+  }
+};
+
+module.exports = {
+  createInvoice,
+  getPaymentStatus,
+  verifyCallbackHmac,
+  createSlaveAccount,
+  getWalletAddress,
+  verifySlaveHmac,
+};

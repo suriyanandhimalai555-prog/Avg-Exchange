@@ -1,28 +1,47 @@
 // frontend/src/components/dashboard/DepositModal.jsx
-// OxaPay deposit: creates an invoice, polls for payment confirmation.
-import { useState, useEffect, useRef } from 'react';
+// White-Label / Static Address deposit flow.
+// Each user gets a permanent blockchain address backed by an OxaPay slave account.
+// No redirect — user copies the address or scans the QR and sends crypto directly.
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import QRCode from 'react-qr-code';
 import {
   IoArrowDownOutline, IoCloseOutline,
   IoAlertCircleOutline, IoCheckmarkCircleOutline,
-  IoOpenOutline, IoRefreshOutline,
+  IoCopyOutline, IoRefreshOutline,
 } from 'react-icons/io5';
+import { LuTriangleAlert } from 'react-icons/lu';
 import API_URL from '../../config/api';
 
+// Currency metadata
 const COINS = [
-  { symbol: 'USDT', color: '#26a17b' },
-  { symbol: 'BTC',  color: '#f7931a' },
-  { symbol: 'ETH',  color: '#627eea' },
-  { symbol: 'BNB',  color: '#f3ba2f' },
-  { symbol: 'SOL',  color: '#9945ff' },
-  { symbol: 'TRX',  color: '#e50914' },
-  { symbol: 'LTC',  color: '#bfbbbb' },
+  { symbol: 'USDT', color: '#26a17b', networks: ['TRX', 'ETH', 'BSC'] },
+  { symbol: 'BTC',  color: '#f7931a', networks: ['BTC'] },
+  { symbol: 'ETH',  color: '#627eea', networks: ['ETH'] },
+  { symbol: 'BNB',  color: '#f3ba2f', networks: ['BSC'] },
+  { symbol: 'SOL',  color: '#9945ff', networks: ['SOL'] },
+  { symbol: 'TRX',  color: '#e50914', networks: ['TRX'] },
+  { symbol: 'LTC',  color: '#bfbbbb', networks: ['LTC'] },
 ];
 
-const QUICK_AMOUNTS = {
-  USDT: [100, 500, 1000, 5000],
-  BTC:  [0.001, 0.01, 0.1, 1],
-  default: [1, 10, 100, 500],
+// Human-readable network labels
+const NETWORK_LABELS = {
+  TRX: 'Tron (TRC-20)',
+  ETH: 'Ethereum (ERC-20)',
+  BSC: 'BNB Smart Chain (BEP-20)',
+  BTC: 'Bitcoin',
+  SOL: 'Solana',
+  LTC: 'Litecoin',
+};
+
+// Minimum deposit warnings per network
+const MIN_DEPOSIT = {
+  TRX: '1 USDT',
+  ETH: '10 USDT',
+  BSC: '1 USDT',
+  BTC: '0.0001 BTC',
+  SOL: '0.01 SOL',
+  LTC: '0.01 LTC',
 };
 
 const CoinBtn = ({ symbol, color, selected, onClick }) => (
@@ -45,160 +64,62 @@ const CoinBtn = ({ symbol, color, selected, onClick }) => (
   </button>
 );
 
-// ── OxaPay payment status poller ──────────────────────────────────────────────
-const POLL_INTERVAL_MS = 5_000;
-const POLL_MAX         = 72;      // 72 × 5 s = 6 min
-
-const OxaPayStatus = ({ trackId, currency, amount, payLink, onPaid, onExpired }) => {
-  const [status,   setStatus]   = useState('Waiting');
-  const [attempts, setAttempts] = useState(0);
-  const timerRef = useRef(null);
-  const onPaidRef = useRef(onPaid);
-  const onExpiredRef = useRef(onExpired);
-  onPaidRef.current = onPaid;
-  onExpiredRef.current = onExpired;
-
-  useEffect(() => {
-    let count = 0;
-    timerRef.current = setInterval(async () => {
-      count++;
-      if (count >= POLL_MAX) {
-        clearInterval(timerRef.current);
-        onExpiredRef.current();
-        return;
-      }
-      setAttempts(count);
-
-      try {
-        const { data } = await axios.get(
-          `${API_URL}/api/payment/status/${trackId}`,
-          { withCredentials: true }
-        );
-        setStatus(data.status);
-        if (data.status === 'Paid') {
-          clearInterval(timerRef.current);
-          onPaidRef.current();
-        } else if (data.status === 'Expired' || data.status === 'Error') {
-          clearInterval(timerRef.current);
-          onExpiredRef.current();
-        }
-      } catch (_) {}
-    }, POLL_INTERVAL_MS);
-
-    return () => clearInterval(timerRef.current);
-  }, [trackId]);
-
-  const isPaid = status === 'Paid';
-
-  return (
-    <div className="flex flex-col items-center gap-4 py-4 text-center">
-      {isPaid ? (
-        <>
-          <IoCheckmarkCircleOutline size={48} className="text-[#0ecb81]" />
-          <div>
-            <p className="font-bold text-[#0ecb81] text-base">Payment Confirmed!</p>
-            <p className="text-[#848e9c] text-sm mt-1">
-              {amount} {currency} has been credited to your account.
-            </p>
-          </div>
-        </>
-      ) : (
-        <>
-          {/* Step 1: Open checkout */}
-          <div className="w-full bg-[#2b3139] border border-[#363c45] rounded-xl p-4 flex flex-col gap-3">
-            <p className="text-xs text-[#848e9c] font-semibold uppercase tracking-wide">Step 1 — Complete payment</p>
-
-            {payLink ? (
-              <a
-                href={payLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 w-full py-3 bg-[#f0b90b] hover:bg-[#d4a300] text-black font-bold text-sm rounded-xl transition-colors active:scale-[0.98]"
-              >
-                <IoOpenOutline size={16} />
-                Open OxaPay Checkout
-              </a>
-            ) : (
-              <p className="text-[#f6465d] text-xs text-center">
-                No checkout URL returned — check backend logs for the OxaPay response.
-              </p>
-            )}
-
-            {payLink && (
-              <p className="text-[#848e9c] text-[10px] text-center break-all">
-                {payLink}
-              </p>
-            )}
-          </div>
-
-          {/* Step 2: Auto-detecting */}
-          <div className="w-full bg-[#2b3139] border border-[#363c45] rounded-xl p-4 flex flex-col gap-2">
-            <p className="text-xs text-[#848e9c] font-semibold uppercase tracking-wide">Step 2 — Auto-detecting payment</p>
-            <div className="flex items-center justify-between">
-              <p className="text-[#eaecef] text-xs flex items-center gap-1.5">
-                <IoRefreshOutline size={12} className="animate-spin text-[#f0b90b]" />
-                Checking status…
-              </p>
-              <span className="text-[#848e9c] text-xs">
-                Status: <span className="text-[#f0b90b]">{status}</span>
-              </span>
-            </div>
-            <div className="w-full bg-[#363c45] rounded-full h-1 mt-1">
-              <div
-                className="bg-[#f0b90b] h-1 rounded-full transition-all duration-500"
-                style={{ width: `${(attempts / POLL_MAX) * 100}%` }}
-              />
-            </div>
-            <p className="text-[#848e9c] text-[10px]">
-              Expires in {Math.max(0, POLL_MAX - attempts) * 5}s — page will update automatically when payment is confirmed.
-            </p>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
-// ── Main modal ─────────────────────────────────────────────────────────────────
 const DepositModal = ({ open, onClose, onSuccess }) => {
   const [coin,     setCoin]     = useState('USDT');
-  const [amount,   setAmount]   = useState('');
+  const [network,  setNetwork]  = useState('TRX');
+  const [address,  setAddress]  = useState(null);
   const [loading,  setLoading]  = useState(false);
-  const [feedback, setFeedback] = useState(null);
-  const [invoice,  setInvoice]  = useState(null);  // { trackId, payLink, currency, amount }
+  const [error,    setError]    = useState(null);
+  const [copied,   setCopied]   = useState(false);
 
-  if (!open) return null;
+  const coinMeta   = COINS.find(c => c.symbol === coin);
+  const networks   = coinMeta?.networks ?? [];
 
-  const quickAmounts = QUICK_AMOUNTS[coin] ?? QUICK_AMOUNTS.default;
-
-  const handleClose = () => {
-    setFeedback(null);
-    setAmount('');
-    setInvoice(null);
-    onClose();
+  // When coin changes, reset to first available network
+  const handleCoinChange = (symbol) => {
+    setCoin(symbol);
+    setNetwork(COINS.find(c => c.symbol === symbol)?.networks[0] ?? 'TRX');
+    setAddress(null);
+    setError(null);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    const amt = parseFloat(amount);
-    if (!amt || amt <= 0) return;
+  const fetchAddress = useCallback(async () => {
     setLoading(true);
-    setFeedback(null);
+    setError(null);
     try {
-      const { data } = await axios.post(
-        `${API_URL}/api/payment/invoice`,
-        { currency: coin, amount: amt },
+      const { data } = await axios.get(
+        `${API_URL}/api/payment/address/${coin}/${network}`,
         { withCredentials: true }
       );
-      setInvoice(data);
-      // Note: we do NOT window.open() here — browsers block async-triggered popups.
-      // The OxaPayStatus component shows a prominent button the user clicks directly.
+      setAddress(data.address);
     } catch (err) {
-      setFeedback({ type: 'error', message: err?.response?.data?.error || 'Failed to create invoice' });
+      setError(err.response?.data?.error || 'Failed to generate deposit address. Please try again.');
     } finally {
       setLoading(false);
     }
+  }, [coin, network]);
+
+  // Fetch address whenever coin or network changes (while modal is open)
+  useEffect(() => {
+    if (!open) return;
+    fetchAddress();
+  }, [open, fetchAddress]);
+
+  const handleCopy = () => {
+    if (!address) return;
+    navigator.clipboard.writeText(address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
+
+  const handleClose = () => {
+    setAddress(null);
+    setError(null);
+    setCopied(false);
+    onClose();
+  };
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -212,114 +133,129 @@ const DepositModal = ({ open, onClose, onSuccess }) => {
             <div className="w-8 h-8 rounded-lg bg-[#f0b90b]/10 flex items-center justify-center">
               <IoArrowDownOutline className="text-[#f0b90b]" size={18} />
             </div>
-            <h2 className="font-bold text-[#eaecef] text-base">Deposit Funds</h2>
+            <h2 className="font-bold text-[#eaecef] text-base">Deposit Crypto</h2>
           </div>
           <button onClick={handleClose} className="p-1.5 rounded-lg text-[#848e9c] hover:text-[#eaecef] hover:bg-[#2b3139] transition-colors">
             <IoCloseOutline size={20} />
           </button>
         </div>
 
-        <div className="px-6 py-5 flex flex-col gap-4">
+        <div className="px-6 py-5 flex flex-col gap-5">
 
-          {/* OxaPay payment waiting screen */}
-          {invoice ? (
-            <OxaPayStatus
-              trackId={invoice.trackId}
-              currency={invoice.currency}
-              amount={invoice.amount}
-              payLink={invoice.payLink}
-              onPaid={() => {
-                setFeedback({ type: 'success', message: `${invoice.amount} ${invoice.currency} credited to your account!` });
-                setInvoice(null);
-                setAmount('');
-                onSuccess && onSuccess(invoice.currency, invoice.amount);
-              }}
-              onExpired={() => {
-                setFeedback({ type: 'error', message: 'Invoice expired. Please try again.' });
-                setInvoice(null);
-              }}
-            />
-          ) : (
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {/* Coin selector */}
+          <div>
+            <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wider mb-2">
+              Select Coin
+            </label>
+            <div className="grid grid-cols-4 gap-2">
+              {COINS.map(({ symbol, color }) => (
+                <CoinBtn
+                  key={symbol}
+                  symbol={symbol}
+                  color={color}
+                  selected={coin === symbol}
+                  onClick={() => handleCoinChange(symbol)}
+                />
+              ))}
+            </div>
+          </div>
 
-              {/* Coin selector */}
-              <div>
-                <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wider mb-2">
-                  Select Coin
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {COINS.map(({ symbol, color }) => (
-                    <CoinBtn
-                      key={symbol}
-                      symbol={symbol}
-                      color={color}
-                      selected={coin === symbol}
-                      onClick={() => { setCoin(symbol); setAmount(''); }}
-                    />
-                  ))}
-                </div>
+          {/* Network selector */}
+          {networks.length > 1 && (
+            <div>
+              <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wider mb-2">
+                Network
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {networks.map(net => (
+                  <button
+                    key={net}
+                    type="button"
+                    onClick={() => { setNetwork(net); setAddress(null); setError(null); }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+                      network === net
+                        ? 'border-[#f0b90b] bg-[#f0b90b]/10 text-[#f0b90b]'
+                        : 'border-[#363c45] bg-[#2b3139] text-[#848e9c] hover:border-[#848e9c] hover:text-[#eaecef]'
+                    }`}
+                  >
+                    {NETWORK_LABELS[net] ?? net}
+                  </button>
+                ))}
               </div>
-
-              {/* Amount */}
-              <div>
-                <label className="block text-xs text-[#848e9c] font-semibold uppercase tracking-wider mb-2">
-                  Amount
-                </label>
-                <div className="bg-[#2b3139] border border-[#363c45] focus-within:border-[#f0b90b] rounded-xl flex items-center px-4 py-3 transition-colors mb-2.5">
-                  <input
-                    type="number"
-                    required
-                    min="0.000001"
-                    step="any"
-                    value={amount}
-                    onChange={e => setAmount(e.target.value)}
-                    placeholder="0.00"
-                    className="bg-transparent text-[#eaecef] text-base w-full outline-none font-mono placeholder-[#848e9c]"
-                  />
-                  <span className="text-[#848e9c] text-sm font-bold pl-3 shrink-0">{coin}</span>
-                </div>
-
-                <div className="grid grid-cols-4 gap-2">
-                  {quickAmounts.map(amt => (
-                    <button
-                      key={amt}
-                      type="button"
-                      onClick={() => setAmount(String(amt))}
-                      className="py-1.5 text-xs font-semibold text-[#848e9c] border border-[#363c45]
-                                 rounded-lg bg-[#2b3139] hover:border-[#f0b90b] hover:text-[#f0b90b]
-                                 transition-colors"
-                    >
-                      {amt.toLocaleString()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Feedback */}
-              {feedback && (
-                <div className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm
-                  ${feedback.type === 'success'
-                    ? 'bg-[#0ecb81]/10 border border-[#0ecb81]/20 text-[#0ecb81]'
-                    : 'bg-[#f6465d]/10 border border-[#f6465d]/20 text-[#f6465d]'}`}
-                >
-                  {feedback.type === 'success'
-                    ? <IoCheckmarkCircleOutline size={17} className="shrink-0" />
-                    : <IoAlertCircleOutline size={17} className="shrink-0" />}
-                  <span>{feedback.message}</span>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loading || !amount || parseFloat(amount) <= 0}
-                className="w-full py-3 font-bold rounded-xl transition-colors active:scale-[0.98]
-                  disabled:opacity-40 disabled:cursor-not-allowed
-                  bg-[#f0b90b] hover:bg-[#d4a300] text-black"
-              >
-                {loading ? 'Creating invoice…' : `Pay ${amount || '0'} ${coin} via OxaPay`}
-              </button>
-            </form>
+            </div>
           )}
+
+          {/* Address + QR */}
+          {loading ? (
+            <div className="flex flex-col items-center gap-3 py-8">
+              <div className="w-8 h-8 border-2 border-[#f0b90b] border-t-transparent rounded-full animate-spin" />
+              <p className="text-[#848e9c] text-sm">Generating your deposit address…</p>
+            </div>
+          ) : error ? (
+            <div className="flex items-start gap-2.5 px-3 py-3 rounded-xl bg-[#f6465d]/10 border border-[#f6465d]/20 text-[#f6465d] text-sm">
+              <IoAlertCircleOutline size={17} className="shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p>{error}</p>
+                <button
+                  onClick={fetchAddress}
+                  className="mt-2 flex items-center gap-1 text-xs font-semibold underline underline-offset-2 hover:opacity-80"
+                >
+                  <IoRefreshOutline size={12} /> Try again
+                </button>
+              </div>
+            </div>
+          ) : address ? (
+            <div className="flex flex-col gap-4">
+              {/* QR Code */}
+              <div className="flex justify-center bg-white rounded-xl p-4">
+                <QRCode value={address} size={160} />
+              </div>
+
+              {/* Address display */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs text-[#848e9c] font-semibold uppercase tracking-wider">
+                    {coin} Address ({NETWORK_LABELS[network] ?? network})
+                  </span>
+                  <button
+                    onClick={handleCopy}
+                    className="flex items-center gap-1 text-xs font-semibold text-[#f0b90b] hover:opacity-80 transition-opacity"
+                  >
+                    {copied
+                      ? <><IoCheckmarkCircleOutline size={13} /> Copied!</>
+                      : <><IoCopyOutline size={13} /> Copy</>
+                    }
+                  </button>
+                </div>
+                <div
+                  onClick={handleCopy}
+                  className="bg-[#2b3139] border border-[#363c45] hover:border-[#f0b90b] rounded-xl px-4 py-3 cursor-pointer transition-colors group"
+                >
+                  <p className="text-[#eaecef] text-xs font-mono break-all group-hover:text-[#f0b90b] transition-colors">
+                    {address}
+                  </p>
+                </div>
+              </div>
+
+              {/* Warnings */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-start gap-2 bg-[#f0b90b]/5 border border-[#f0b90b]/20 rounded-xl px-3 py-2.5">
+                  <LuTriangleAlert size={14} className="text-[#f0b90b] shrink-0 mt-0.5" />
+                  <div className="text-[11px] text-[#848e9c] leading-relaxed">
+                    <p>Only send <span className="text-[#eaecef] font-bold">{coin}</span> on the <span className="text-[#eaecef] font-bold">{NETWORK_LABELS[network] ?? network}</span> network to this address.</p>
+                    <p className="mt-0.5">Sending any other coin or using the wrong network will result in <span className="text-[#f6465d] font-semibold">permanent loss of funds</span>.</p>
+                    {MIN_DEPOSIT[network] && (
+                      <p className="mt-0.5">Minimum deposit: <span className="text-[#eaecef] font-semibold">{MIN_DEPOSIT[network]}</span></p>
+                    )}
+                  </div>
+                </div>
+                <p className="text-[#848e9c] text-[11px] text-center">
+                  This is your permanent address — it can be reused for future deposits.
+                  Your balance updates automatically after network confirmation.
+                </p>
+              </div>
+            </div>
+          ) : null}
 
         </div>
       </div>
