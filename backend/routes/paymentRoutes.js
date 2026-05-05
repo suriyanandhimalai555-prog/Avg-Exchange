@@ -161,7 +161,7 @@ router.post('/invoice', requireAuth, invoiceLimiter, async (req, res, next) => {
 router.get('/status/:trackId', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      `SELECT track_id, currency, amount, status, credited, payment_url, created_at
+      `SELECT track_id, currency, amount, status, credited, payment_url, created_at, payment_type
          FROM payment_invoices
         WHERE track_id = $1 AND user_id = $2`,
       [req.params.trackId, req.user.id]
@@ -178,7 +178,10 @@ router.get('/status/:trackId', requireAuth, async (req, res, next) => {
     const isTerminal = ['Paid', 'Expired', 'Error'].includes(invoice.status) || invoice.credited;
     if (!isTerminal) {
       try {
-        const oxaStatus = await oxapay.getPaymentStatus(req.params.trackId);
+        const statusFn = invoice.payment_type === 'whitelabel'
+          ? oxapay.getWhiteLabelStatus
+          : oxapay.getPaymentStatus;
+        const oxaStatus = await statusFn(req.params.trackId);
 
         if (oxaStatus && oxaStatus !== invoice.status) {
           await db.query(
@@ -302,8 +305,8 @@ router.post('/whitelabel', requireAuth, invoiceLimiter, async (req, res, next) =
 
     // Store in payment_invoices so creditInvoice() + status poll work unchanged
     await db.query(
-      `INSERT INTO payment_invoices (user_id, track_id, currency, amount, status, payment_url)
-       VALUES ($1, $2, $3, $4, 'Waiting', $5)`,
+      `INSERT INTO payment_invoices (user_id, track_id, currency, amount, status, payment_url, payment_type)
+       VALUES ($1, $2, $3, $4, 'Waiting', $5, 'whitelabel')`,
       [userId, wl.trackId, cur, new Decimal(wl.payAmount).toFixed(10), '']
     );
 
@@ -314,6 +317,7 @@ router.post('/whitelabel', requireAuth, invoiceLimiter, async (req, res, next) =
       payAmount:   wl.payAmount,
       payCurrency: wl.payCurrency,
       network:     wl.network,
+      networkCode: network || cur,   // user-selected code: 'TRX','ETH','BSC', etc.
       qrCode:      wl.qrCode,
       expiredAt:   wl.expiredAt,
       rate:        wl.rate,

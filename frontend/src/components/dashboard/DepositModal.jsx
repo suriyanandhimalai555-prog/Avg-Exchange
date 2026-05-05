@@ -2,6 +2,7 @@
 // White-Label deposit flow — user stays on site, copies address / scans QR.
 // OxaPay returns a real blockchain address. We poll status via trackId.
 import { useState, useEffect, useRef, useCallback } from 'react';
+import QRCode from 'react-qr-code';
 import axios from 'axios';
 import {
   IoArrowDownOutline, IoCloseOutline,
@@ -36,7 +37,9 @@ const POLL_MAX      = 360; // 30 min
 
 // ── Countdown timer ────────────────────────────────────────────────────────
 const useCountdown = (expiredAt) => {
-  const [secs, setSecs] = useState(0);
+  const [secs, setSecs] = useState(() =>
+    expiredAt ? Math.max(0, parseInt(expiredAt) - Math.floor(Date.now() / 1000)) : null
+  );
   useEffect(() => {
     if (!expiredAt) return;
     const tick = () => setSecs(Math.max(0, parseInt(expiredAt) - Math.floor(Date.now() / 1000)));
@@ -44,9 +47,9 @@ const useCountdown = (expiredAt) => {
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [expiredAt]);
-  const m = Math.floor(secs / 60).toString().padStart(2, '0');
-  const s = (secs % 60).toString().padStart(2, '0');
-  return { display: `${m}:${s}`, expired: secs === 0 };
+  const m = Math.floor((secs ?? 0) / 60).toString().padStart(2, '0');
+  const s = ((secs ?? 0) % 60).toString().padStart(2, '0');
+  return { display: secs == null ? '--:--' : `${m}:${s}`, expired: secs === 0 };
 };
 
 const CoinBtn = ({ symbol, color, selected, onClick }) => (
@@ -69,7 +72,6 @@ const CoinBtn = ({ symbol, color, selected, onClick }) => (
 const PaymentScreen = ({ payment, onPaid, onExpired, onBack }) => {
   const [status,  setStatus]  = useState('Waiting');
   const [copied,  setCopied]  = useState(false);
-  const [polls,   setPolls]   = useState(0);
   const { display: countdown, expired } = useCountdown(payment.expiredAt);
   const onPaidRef    = useRef(onPaid);
   const onExpiredRef = useRef(onExpired);
@@ -80,7 +82,6 @@ const PaymentScreen = ({ payment, onPaid, onExpired, onBack }) => {
     let count = 0;
     const id = setInterval(async () => {
       count++;
-      setPolls(count);
       if (count >= POLL_MAX) { clearInterval(id); onExpiredRef.current(); return; }
       try {
         const { data } = await axios.get(`${API_URL}/api/payment/status/${payment.trackId}`,
@@ -140,12 +141,16 @@ const PaymentScreen = ({ payment, onPaid, onExpired, onBack }) => {
         </div>
       </div>
 
-      {/* QR Code from OxaPay */}
-      {payment.qrCode && (
-        <div className="flex justify-center bg-white rounded-xl p-3">
-          <img src={payment.qrCode} alt="Payment QR" className="w-40 h-40" />
+      {/* QR Code — plain address, scannable by any camera or wallet app */}
+      <div className="flex flex-col items-center gap-1.5">
+        <div className="bg-white rounded-xl p-4">
+          <QRCode value={payment.address} size={168} />
         </div>
-      )}
+        <p className="text-[#848e9c] text-[10px]">
+          Scan with <span className="text-[#eaecef] font-semibold">Trust Wallet</span> or{' '}
+          <span className="text-[#eaecef] font-semibold">MetaMask</span> to send directly
+        </p>
+      </div>
 
       {/* Address */}
       <div>

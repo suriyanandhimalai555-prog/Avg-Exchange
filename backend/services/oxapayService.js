@@ -105,6 +105,31 @@ const getPaymentStatus = async (trackId) => {
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 };
 
+// ── getWhiteLabelStatus ──────────────────────────────────────────────────────
+/**
+ * Query OxaPay for the status of a white-label payment using the correct
+ * inquiry endpoint. White-label track IDs are NOT queryable via /v1/payment/{id}.
+ *
+ * @param  {string} trackId
+ * @returns {string} e.g. 'Waiting' | 'Paid' | 'Expired' | 'Error'
+ */
+const getWhiteLabelStatus = async (trackId) => {
+  const { data } = await axios.post(
+    `${OXAPAY_BASE}/merchants/inquiry`,
+    { merchant: MERCHANT_KEY, trackId },
+    { timeout: 10_000, headers: { 'Content-Type': 'application/json' } }
+  );
+  console.log('[oxapay] getWhiteLabelStatus response:', JSON.stringify(data));
+
+  if (data.result !== 100) {
+    throw new Error(`OxaPay inquiry error: ${data.message || JSON.stringify(data)}`);
+  }
+
+  // Response shape: { result: 100, status: 'Waiting'|'Paid'|'Expired', ... }
+  const raw = data.status ?? '';
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+};
+
 // ── verifyCallbackHmac ───────────────────────────────────────────────────────
 /**
  * Verify the HMAC-SHA512 signature OxaPay sends with every callback.
@@ -273,6 +298,7 @@ module.exports = {
   createInvoice,
   createWhiteLabelPayment,
   getPaymentStatus,
+  getWhiteLabelStatus,
   verifyCallbackHmac,
   createSlaveAccount,
   getWalletAddress,

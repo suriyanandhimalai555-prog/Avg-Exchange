@@ -7,9 +7,10 @@ Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP, toExpPos: 28, toEx
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 30,                      // support high concurrency (500 users)
-  connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 30000,
+  max: 20,
+  connectionTimeoutMillis: 15_000,  // 15 s — Railway can be slow on cold start
+  idleTimeoutMillis:       30_000,
+  ssl: { rejectUnauthorized: false },
 });
 
 pool.query('SELECT NOW()', (err) => {
