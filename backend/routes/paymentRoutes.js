@@ -255,6 +255,75 @@ router.post('/callback', async (req, res) => {
   }
 });
 
+// ── POST /api/payment/whitelabel ─────────────────────────────────────────────
+// Creates a white-label payment: returns a raw blockchain address + QR code.
+// User stays on our site — no redirect to OxaPay checkout page.
+// Reuses the same payment_invoices table + creditInvoice helper as invoices.
+//
+// Body: { currency, network, amount }
+//   currency — crypto to receive (e.g. 'USDT', 'BTC')
+//   network  — blockchain network (e.g. 'TRX', 'ETH', 'BSC')
+//   amount   — amount in USD (OxaPay converts to crypto at live rate)
+router.post('/whitelabel', requireAuth, invoiceLimiter, async (req, res, next) => {
+  try {
+    const { currency = 'USDT', network, amount } = req.body;
+    const userId = req.user.id;
+
+    const dAmount = new Decimal(amount || 0);
+    if (dAmount.lte(0)) {
+      return res.status(400).json({ error: 'amount must be a positive number' });
+    }
+
+    const cur = currency.toUpperCase();
+    if (!SUPPORTED_CURRENCIES.has(cur)) {
+      return res.status(400).json({
+        error: `Unsupported currency. Supported: ${[...SUPPORTED_CURRENCIES].join(', ')}`,
+      });
+    }
+
+    const orderId = `avg_wl_${userId}_${Date.now()}`;
+
+    const userRes = await db.query('SELECT email, name FROM "User" WHERE id=$1', [userId]);
+    const { email, name } = userRes.rows[0] ?? {};
+
+    const callbackUrl = process.env.OXAPAY_CALLBACK_URL
+      || `${process.env.APP_URL || 'http://localhost:4000'}/api/payment/callback`;
+
+    const wl = await oxapay.createWhiteLabelPayment({
+      amount:      dAmount.toNumber(),
+      currency:    'USD',    // amount is always in USD; OxaPay converts to crypto
+      payCurrency: cur,
+      network:     network || undefined,
+      orderId,
+      callbackUrl,
+      email,
+      description: `AvgExchange deposit — ${dAmount.toFixed(2)} USD → ${cur} for ${name || email || `user #${userId}`}`,
+    });
+
+    // Store in payment_invoices so creditInvoice() + status poll work unchanged
+    await db.query(
+      `INSERT INTO payment_invoices (user_id, track_id, currency, amount, status, payment_url)
+       VALUES ($1, $2, $3, $4, 'Waiting', $5)`,
+      [userId, wl.trackId, cur, new Decimal(wl.payAmount).toFixed(10), '']
+    );
+
+    res.json({
+      trackId:     wl.trackId,
+      address:     wl.address,
+      memo:        wl.memo,
+      payAmount:   wl.payAmount,
+      payCurrency: wl.payCurrency,
+      network:     wl.network,
+      qrCode:      wl.qrCode,
+      expiredAt:   wl.expiredAt,
+      rate:        wl.rate,
+    });
+  } catch (err) {
+    console.error('[payment/whitelabel] failed:', err.message);
+    next(err);
+  }
+});
+
 // ── GET /api/payment/address/:currency/:network ──────────────────────────────
 // Returns (or creates) the permanent static deposit address for this user.
 // First call creates an OxaPay slave account + fetches the address (takes ~1-2s).

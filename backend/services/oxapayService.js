@@ -130,6 +130,58 @@ const verifyCallbackHmac = (rawBody, receivedHmac) => {
   }
 };
 
+// ── createWhiteLabelPayment ──────────────────────────────────────────────────
+/**
+ * White-Label payment: returns a raw blockchain address + QR code URL.
+ * The user stays on your site — no redirect to OxaPay checkout.
+ *
+ * Endpoint: POST /merchants/request/whitelabel
+ * Auth: merchant key goes in the request BODY (not a header).
+ *
+ * @returns {{ trackId, address, memo, payAmount, payCurrency, network, qrCode, expiredAt }}
+ */
+const createWhiteLabelPayment = async ({
+  amount, currency, payCurrency, network,
+  orderId, callbackUrl, email, description,
+  lifeTime = 1440,      // 24 hours (max 2880)
+  underPaidCover = 5,   // allow up to 5% underpayment
+  feePaidByPayer = 0,   // merchant absorbs the fee
+}) => {
+  const body = {
+    merchant:       MERCHANT_KEY,
+    amount,
+    payCurrency,
+    callbackUrl,
+    lifeTime,
+    feePaidByPayer,
+    underPaidCover,
+  };
+  if (currency)    body.currency    = currency;
+  if (network)     body.network     = network;
+  if (orderId)     body.orderId     = orderId;
+  if (email)       body.email       = email;
+  if (description) body.description = description;
+
+  const { data } = await axios.post(`${OXAPAY_BASE}/merchants/request/whitelabel`, body);
+  console.log('[oxapay] createWhiteLabel response:', JSON.stringify(data));
+
+  if (data.result !== 100) {
+    throw new Error(`OxaPay white-label error: ${data.message || JSON.stringify(data)}`);
+  }
+
+  return {
+    trackId:     String(data.trackId),
+    address:     data.address,
+    memo:        data.memo || '',
+    payAmount:   data.payAmount,
+    payCurrency: data.payCurrency,
+    network:     data.network,
+    qrCode:      data.QRCode,
+    expiredAt:   data.expiredAt,   // Unix timestamp string
+    rate:        data.rate,
+  };
+};
+
 // ── createSlaveAccount ───────────────────────────────────────────────────────
 /**
  * White-Label: create a slave (sub-merchant) account under your master merchant.
@@ -219,6 +271,7 @@ const verifySlaveHmac = (rawBody, receivedHmac, slaveKey) => {
 
 module.exports = {
   createInvoice,
+  createWhiteLabelPayment,
   getPaymentStatus,
   verifyCallbackHmac,
   createSlaveAccount,
