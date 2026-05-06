@@ -2,7 +2,11 @@ const jwt = require('jsonwebtoken');
 const db = require('../db');
 
 const requireAuth = async (req, res, next) => {
-  const { token } = req.cookies;
+  // Accept token from cookie (desktop) OR Authorization: Bearer header (mobile/iOS Safari)
+  const { token: cookieToken } = req.cookies;
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = cookieToken || bearerToken;
 
   if (!token) {
     return res.status(401).json({ error: 'Authorization token required' });

@@ -10,11 +10,20 @@ const savedUser = (() => {
 
 // Silently re-fetches the user profile from the server using the existing cookie.
 // Fixes stale localStorage (e.g. missing `id` from old sessions).
+const getStoredToken = () => {
+  try { return JSON.parse(localStorage.getItem('user') || '{}')?.token || null; }
+  catch { return null; }
+};
+
 export const refreshUser = createAsyncThunk(
   'auth/refreshUser',
   async (_, { rejectWithValue }) => {
     try {
-      const res = await fetch(`${API_URL}/api/user/me`, { credentials: 'include' });
+      const token = getStoredToken();
+      const res = await fetch(`${API_URL}/api/user/me`, {
+        credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) return rejectWithValue(null); // not logged in — ignore silently
       const data = await res.json();
       const user = {
@@ -83,9 +92,11 @@ export const logoutUser = createAsyncThunk(
   'auth/logoutUser',
   async (_, { rejectWithValue }) => {
     try {
+      const token = getStoredToken();
       await fetch(`${API_URL}/api/user/logout`, {
         method: 'POST',
         credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
     } catch (_) {
       // Ignore network errors — still clear local state

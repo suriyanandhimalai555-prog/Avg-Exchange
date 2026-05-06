@@ -78,8 +78,7 @@ const signupUser = async (req, res, next) => {
     const token = createToken(user.id, '3d');
     
     res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 3 * 24 * 60 * 60 * 1000 });
-    
-    res.status(200).json({ id: user.id, email, name: user.name, referralCode: user.referral_code, isAdmin: false });
+    res.status(200).json({ id: user.id, email, name: user.name, referralCode: user.referral_code, isAdmin: false, token });
 
   } catch (error) {
     res.status(400);
@@ -110,8 +109,7 @@ const loginUser = async (req, res, next) => {
 
     // 3. Set cookie with calculated maxAge
     res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge });
-    
-    res.status(200).json({ id: user.id, email, name: user.name, referralCode: user.referral_code, isAdmin: user.is_admin || false });
+    res.status(200).json({ id: user.id, email, name: user.name, referralCode: user.referral_code, isAdmin: user.is_admin || false, token });
   } catch (error) {
     res.status(400);
     next(error);
