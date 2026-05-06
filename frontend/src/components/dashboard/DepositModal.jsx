@@ -344,7 +344,7 @@ const DepositModal = ({ open, onClose, onSuccess }) => {
                   ))}
                 </div>
                 <p className="text-[#848e9c] text-[10px] mt-2">
-                  OxaPay will calculate the exact {coin} amount at the live rate.
+                  The exact {coin} amount will be calculated at the live rate.
                 </p>
               </div>
 
