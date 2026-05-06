@@ -1,26 +1,41 @@
 // src/pages/Home.jsx
-import React from 'react';
+import React, { useRef, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { heroStyles, ctaStyles } from '../components/HomeStyles';
 import TrendingSection from '../components/TrendingSection';
 import FeaturesSection from '../components/FeaturesSection';
-import StepsSection from '../components/StepsSection'; 
+import StepsSection from '../components/StepsSection';
 import heroVideo from '../assets/Droneshot.mp4';
+
+const SKIP_LAST_SECS = 4;
 
 const Home = () => {
   const user = useSelector((state) => state.auth.user);
   const navigate = useNavigate();
 
+  // for skipping last 4 seconds of video
+  const videoRef = useRef(null);
+  const handleTimeUpdate = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.duration) return;
+    if (v.currentTime >= v.duration - SKIP_LAST_SECS) {
+      v.currentTime = 0;
+    }
+  }, []);
+
+  
   return (
     <div className="bg-[#0b0c0e] min-h-screen selection:bg-[#00D68F] selection:text-black">
       
       {/* --- HERO SECTION --- */}
       <section className={heroStyles.section}>
         <video
+          ref={videoRef}
           className={heroStyles.video}
           autoPlay loop muted playsInline
+          onTimeUpdate={handleTimeUpdate}
         >
           <source src={heroVideo} type="video/mp4" />
         </video>
