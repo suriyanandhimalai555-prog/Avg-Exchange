@@ -7,6 +7,7 @@ import { fetchNavbarBalance } from '../features/balanceSlice';
 import { Link, useSearchParams } from 'react-router-dom';
 import API_URL from '../config/api';
 import TradingViewChart from '../components/TradingViewChart';
+import StaticCoinChart from '../components/StaticCoinChart';
 import useTradeSocket from '../hooks/useTradeSocket';
 
 const MAX_ROWS = 12; // rows per side in order book
@@ -531,7 +532,20 @@ const Trade = () => {
         {/* CENTER: CHART + FORM */}
         <div className={`order-1 lg:order-2 lg:col-span-6 flex flex-col gap-2 min-h-0 ${PANEL_H}`}>
           <div className="h-[320px] lg:h-auto lg:flex-1 lg:min-h-0 bg-[#1e2329] rounded-sm border border-[#2b3139] overflow-hidden">
-            <TradingViewChart symbol={`BINANCE:${selectedCoin.symbol}USDT`} />
+            {(() => {
+              const meta = marketList.find(c => c.symbol.toUpperCase() === selectedCoin.symbol.toUpperCase());
+              if (meta?._isStatic) {
+                return (
+                  <StaticCoinChart
+                    symbol={selectedCoin.symbol}
+                    livePrice={meta.current_price}
+                    minPrice={meta.low_24h}
+                    maxPrice={meta.high_24h}
+                  />
+                );
+              }
+              return <TradingViewChart symbol={`BINANCE:${selectedCoin.symbol}USDT`} />;
+            })()}
           </div>
 
           <div className="shrink-0 bg-[#1e2329] rounded-sm border border-[#2b3139] p-4">

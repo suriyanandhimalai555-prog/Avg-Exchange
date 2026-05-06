@@ -103,6 +103,9 @@ const Navbar = () => {
           <div className={s.leftSection}>
             <Link to="/" className={s.logoLink} onClick={() => setIsOpen(false)}>
               <img src={LogoWebp} alt="Logo" className={s.logoImg} />
+              <span className="ml-1.5 mb-1 px-1.5 py-0.5 text-[9px] font-bold tracking-widest rounded bg-[#f0b90b]/15 text-[#f0b90b] border border-[#f0b90b]/30 uppercase select-none self-end" style={{ letterSpacing: '0.13em' }}>
+                Beta
+              </span>
             </Link>
 
             <div className={s.mainNav}>
