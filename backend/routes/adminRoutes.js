@@ -182,4 +182,66 @@ router.get('/orders', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /api/admin/static-coin — fetch current static coin config
+router.get('/static-coin', async (req, res, next) => {
+  try {
+    const { rows } = await db.query('SELECT * FROM static_coin_config LIMIT 1');
+    res.json(rows[0] || null);
+  } catch (err) { next(err); }
+});
+
+// PUT /api/admin/static-coin — create or update static coin config
+router.put('/static-coin', async (req, res, next) => {
+  const { symbol, min_price, max_price, current_price, enabled } = req.body;
+
+  if (!symbol || min_price == null || max_price == null || current_price == null) {
+    return res.status(400).json({ error: 'symbol, min_price, max_price, and current_price are required' });
+  }
+
+  const dMin     = parseFloat(min_price);
+  const dMax     = parseFloat(max_price);
+  const dCurrent = parseFloat(current_price);
+
+  if (isNaN(dMin) || isNaN(dMax) || isNaN(dCurrent) || dMin <= 0 || dMax <= dMin) {
+    return res.status(400).json({ error: 'Prices must be positive numbers and max_price must be greater than min_price' });
+  }
+  if (dCurrent < dMin || dCurrent > dMax) {
+    return res.status(400).json({ error: 'current_price must be within [min_price, max_price]' });
+  }
+
+  const sym = symbol.toUpperCase().trim();
+  try {
+    const { rows } = await db.query(
+      `INSERT INTO static_coin_config (symbol, min_price, max_price, current_price, enabled, price_24h_ago, price_24h_updated_at)
+       VALUES ($1, $2, $3, $4, $5, $4, NOW())
+       ON CONFLICT (symbol) DO UPDATE
+         SET min_price     = EXCLUDED.min_price,
+             max_price     = EXCLUDED.max_price,
+             current_price = EXCLUDED.current_price,
+             enabled       = EXCLUDED.enabled,
+             price_24h_ago = COALESCE(static_coin_config.price_24h_ago, EXCLUDED.current_price),
+             updated_at    = NOW()
+       RETURNING *`,
+      [sym, dMin, dMax, dCurrent, enabled ?? true]
+    );
+
+    // Seed the bot account with static coin tokens so it can place sell orders.
+    // ON CONFLICT DO NOTHING — only seeds once, never overwrites existing balance.
+    const botEmail = process.env.BOT_EMAIL;
+    if (botEmail) {
+      const botRes = await db.query('SELECT id FROM "User" WHERE email = $1', [botEmail]);
+      if (botRes.rows.length > 0) {
+        await db.query(
+          `INSERT INTO balances (user_id, currency, available_balance)
+           VALUES ($1, $2, 1000000)
+           ON CONFLICT (user_id, currency) DO NOTHING`,
+          [botRes.rows[0].id, sym]
+        );
+      }
+    }
+
+    res.json(rows[0]);
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

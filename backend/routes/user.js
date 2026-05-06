@@ -1,10 +1,12 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const validator = require('validator');
 const { loginUser, signupUser } = require('../controllers/userController');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
+const email = require('../services/emailService');
 
 const router = express.Router();
 
@@ -110,6 +112,125 @@ router.post('/change-password', requireAuth, async (req, res, next) => {
     await db.query('UPDATE "User" SET password = $1 WHERE id = $2', [hash, req.user.id]);
     res.json({ success: true });
   } catch (err) { next(err); }
+});
+
+// ── Forgot Password ──────────────────────────────────────────
+const forgotLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many reset requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const RESET_CODE_EXPIRY_MINUTES = 15;
+
+// POST /api/user/forgot-password
+// Body: { email }
+// Sends a 6-digit OTP to the user's email. Always returns 200 to avoid
+// leaking whether the email exists.
+router.post('/forgot-password', forgotLimiter, async (req, res, next) => {
+  const { email: userEmail } = req.body;
+  if (!userEmail) return res.status(400).json({ error: 'Email is required' });
+
+  try {
+    const { rows } = await db.query(
+      'SELECT id, email FROM "User" WHERE email = $1',
+      [userEmail.toLowerCase().trim()]
+    );
+
+    // Always return success to prevent email enumeration
+    if (rows.length === 0) {
+      return res.json({ success: true, message: 'If an account with that email exists, a reset code has been sent.' });
+    }
+
+    const user = rows[0];
+
+    // Generate a 6-digit code
+    const code = crypto.randomInt(100000, 999999).toString();
+    const expiresAt = new Date(Date.now() + RESET_CODE_EXPIRY_MINUTES * 60 * 1000);
+
+    // Upsert — one active token per user
+    await db.query(
+      `INSERT INTO password_reset_tokens (user_id, code, expires_at, used)
+       VALUES ($1, $2, $3, FALSE)
+       ON CONFLICT (user_id) DO UPDATE
+         SET code = EXCLUDED.code,
+             expires_at = EXCLUDED.expires_at,
+             used = FALSE,
+             created_at = NOW()`,
+      [user.id, code, expiresAt]
+    );
+
+    // Send email (fire-and-forget — don't block the response)
+    email.sendPasswordResetEmail(user.email, code, RESET_CODE_EXPIRY_MINUTES);
+
+    res.json({ success: true, message: 'If an account with that email exists, a reset code has been sent.' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/user/reset-password
+// Body: { email, code, newPassword }
+router.post('/reset-password', forgotLimiter, async (req, res, next) => {
+  const { email: userEmail, code, newPassword } = req.body;
+
+  if (!userEmail || !code || !newPassword) {
+    return res.status(400).json({ error: 'Email, code, and new password are required' });
+  }
+  if (!validator.isStrongPassword(newPassword)) {
+    return res.status(400).json({
+      error: 'Password must be at least 8 characters and include uppercase, lowercase, number, and symbol',
+    });
+  }
+
+  try {
+    // Look up user + token in one query
+    const { rows } = await db.query(
+      `SELECT t.id AS token_id, t.user_id, t.code, t.expires_at, t.used
+         FROM password_reset_tokens t
+         JOIN "User" u ON u.id = t.user_id
+        WHERE u.email = $1`,
+      [userEmail.toLowerCase().trim()]
+    );
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid or expired reset code' });
+    }
+
+    const token = rows[0];
+
+    if (token.used) {
+      return res.status(400).json({ error: 'This reset code has already been used. Please request a new one.' });
+    }
+    if (new Date() > new Date(token.expires_at)) {
+      return res.status(400).json({ error: 'Reset code has expired. Please request a new one.' });
+    }
+    if (token.code !== code.trim()) {
+      return res.status(400).json({ error: 'Invalid reset code' });
+    }
+
+    // All checks passed — update password and mark token used
+    const hash = await bcrypt.hash(newPassword, 10);
+
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE "User" SET password = $1 WHERE id = $2', [hash, token.user_id]);
+      await client.query('UPDATE password_reset_tokens SET used = TRUE WHERE id = $1', [token.token_id]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({ success: true, message: 'Password has been reset successfully. You can now log in.' });
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = router;

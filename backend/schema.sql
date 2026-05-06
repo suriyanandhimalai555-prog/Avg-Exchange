@@ -142,3 +142,30 @@ CREATE TABLE IF NOT EXISTS static_deposit_log (
   tx_id      TEXT          NOT NULL UNIQUE,   -- blockchain txId — idempotency key
   created_at TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 );
+
+-- ── static_coin_config ───────────────────────────────────────
+-- Admin-controlled custom coin with a fixed trading price range.
+-- The bot places orders within [min_price, max_price] using current_price as mid.
+CREATE TABLE IF NOT EXISTS static_coin_config (
+  id            SERIAL         PRIMARY KEY,
+  symbol        VARCHAR(20)    NOT NULL UNIQUE,   -- e.g. 'AVG'
+  min_price     NUMERIC(28,10) NOT NULL,
+  max_price     NUMERIC(28,10) NOT NULL,
+  current_price NUMERIC(28,10) NOT NULL,          -- bot mid price, set by admin
+  enabled       BOOLEAN        NOT NULL DEFAULT TRUE,
+  updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+-- ── password_reset_tokens ─────────────────────────────────────
+-- Short-lived 6-digit OTP codes for the forgot-password flow.
+-- One active token per user; new requests overwrite the old one.
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id         SERIAL        PRIMARY KEY,
+  user_id    INTEGER       NOT NULL UNIQUE REFERENCES "User"(id) ON DELETE CASCADE,
+  code       VARCHAR(6)    NOT NULL,
+  expires_at TIMESTAMPTZ   NOT NULL,
+  used       BOOLEAN       NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prt_user_id ON password_reset_tokens(user_id);

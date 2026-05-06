@@ -187,7 +187,7 @@ const Wallet = () => {
                 </span>
                 <span className="text-[#848e9c] text-lg">USDT</span>
               </div>
-              <p className="text-[#848e9c] text-xs mt-1">Deposit via OxaPay — sandbox mode active</p>
+              <p className="text-[#848e9c] text-xs mt-1">Deposit crypto directly to your wallet</p>
             </div>
 
             <div className="flex items-center gap-3">

@@ -1,5 +1,5 @@
 // frontend/src/App.jsx
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { useEffect } from 'react';
 import { refreshUser } from './features/authSlice';
@@ -13,17 +13,22 @@ import Account    from './pages/Account';
 import Wallet     from './pages/Wallet';
 import Dashboard  from './pages/Dashboard';
 import Admin      from './pages/Admin';
+import ForgotPassword from './pages/ForgotPassword';
 import Navbar     from './components/Navbar';
 import Footer     from './components/Footer';
 import ScrollToTop from './components/ScrollToTop';
 
+// Footer only on public/marketing pages — not on app pages like Trade, Wallet, Dashboard, Admin
+const FOOTER_PAGES = new Set(['/', '/markets', '/login', '/signup', '/forgot-password']);
+
 function AppShell() {
   const user     = useSelector((s) => s.auth.user);
   const dispatch = useDispatch();
+  const { pathname } = useLocation();
 
-  // On every page load, silently re-sync the user profile from the server.
-  // This fixes stale localStorage (e.g. missing `id`) and auto-clears expired sessions.
   useEffect(() => { dispatch(refreshUser()); }, [dispatch]);
+
+  const showFooter = FOOTER_PAGES.has(pathname);
 
   return (
     <div className="min-h-screen bg-[#0b0c0e] selection:bg-[#00D68F]/30">
@@ -67,11 +72,15 @@ function AppShell() {
             path="/signup"
             element={!user ? <Signup /> : <Navigate to="/" replace />}
           />
+          <Route
+            path="/forgot-password"
+            element={!user ? <ForgotPassword /> : <Navigate to="/" replace />}
+          />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
-      <Footer />
+      {showFooter && <Footer />}
     </div>
   );
 }

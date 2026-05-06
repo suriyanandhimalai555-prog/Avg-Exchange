@@ -105,6 +105,46 @@ app.use('/api/trending', marketRoutes);
 
 app.use(errorHandler);
 
+// ── Static coin price oscillator ─────────────────────────
+// Simulates realistic price movement within the admin-set range.
+// Runs every 3 seconds — small random walk (±0.4% per tick), clamped to [min, max].
+function startStaticCoinOscillator() {
+  setInterval(async () => {
+    try {
+      const { rows } = await db.query(
+        `SELECT symbol, min_price, max_price, current_price
+           FROM static_coin_config WHERE enabled = TRUE LIMIT 1`
+      );
+      if (!rows[0]) return;
+
+      const min     = parseFloat(rows[0].min_price);
+      const max     = parseFloat(rows[0].max_price);
+      const current = parseFloat(rows[0].current_price);
+
+      // Random walk ±0.4%, biased slightly back toward centre to prevent drift
+      const centre = (min + max) / 2;
+      const bias   = (centre - current) / (max - min) * 0.002; // gentle pull
+      const delta  = current * ((Math.random() * 0.008 - 0.004) + bias);
+      const next   = Math.min(max, Math.max(min, current + delta));
+
+      // Every 24 h, roll the 24h-ago snapshot forward
+      const snapshot24hOld = rows[0].price_24h_updated_at
+        ? Date.now() - new Date(rows[0].price_24h_updated_at).getTime() > 86_400_000
+        : true;
+
+      await db.query(
+        `UPDATE static_coin_config
+            SET current_price       = $1,
+                price_24h_ago       = CASE WHEN $3 THEN current_price ELSE price_24h_ago END,
+                price_24h_updated_at = CASE WHEN $3 THEN NOW() ELSE price_24h_updated_at END,
+                updated_at          = NOW()
+          WHERE symbol = $2`,
+        [next.toFixed(10), rows[0].symbol, snapshot24hOld]
+      );
+    } catch (_) {}
+  }, 20_000);
+}
+
 // ── Startup helpers ───────────────────────────────────────────
 /**
  * Purge stale bot orders before the engine loads the book.
@@ -124,7 +164,7 @@ async function purgeStaleBotOrders() {
   if (!botEmail) return;
 
   const userRes = await db.query(
-    'SELECT id FROM users WHERE email = $1',
+    'SELECT id FROM "User" WHERE email = $1',
     [botEmail]
   );
   if (userRes.rows.length === 0) return; // bot account not created yet
@@ -205,6 +245,9 @@ const shutdown = async (signal) => {
     if (process.env.NODE_ENV !== 'test') {
       console.log(`Server listening on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
     }
+
+    // Start static coin price oscillator
+    startStaticCoinOscillator();
 
     // Broadcast recovered depth to any clients that connected during startup
     for (const pair of engine.getPairs()) {

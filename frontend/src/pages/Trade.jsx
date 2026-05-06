@@ -1,23 +1,23 @@
 // frontend/src/pages/Trade.jsx
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { IoSearch, IoRefreshOutline } from 'react-icons/io5';
 import { useSelector, useDispatch } from 'react-redux';
 import { fetchNavbarBalance } from '../features/balanceSlice';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import API_URL from '../config/api';
 import TradingViewChart from '../components/TradingViewChart';
-import { STATIC_COINS } from '../constants/tokens';
 import useTradeSocket from '../hooks/useTradeSocket';
 
 const MAX_ROWS = 12; // rows per side in order book
 const ROW_H    = 22; // px — fixed row height
 
 // --- ORDER BOOK ROW ---
-const ObRow = ({ o, side }) => {
+const ObRow = ({ o, side, maxAmount }) => {
   const isAsk = side === 'ask';
   if (!o) return <div style={{ height: ROW_H }} />;
-  const w = Math.min((o.amount / Math.max(o.amount, 1)) * 60, 60); // relative width capped
+  // Bar width relative to the largest amount in this side of the book
+  const w = maxAmount > 0 ? Math.min((o.amount / maxAmount) * 100, 100) : 0;
   return (
     <div
       className={`flex text-xs px-3 relative cursor-pointer group hover:bg-[#2b3139]`}
@@ -28,10 +28,10 @@ const ObRow = ({ o, side }) => {
         style={{ width: `${w}%` }}
       />
       <span className={`flex-1 z-10 font-mono flex items-center ${isAsk ? 'text-[#f6465d]' : 'text-[#0ecb81]'}`}>
-        {o.price.toFixed(4)}
+        {Number(o.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
       </span>
       <span className="flex-1 text-right z-10 font-mono text-[#eaecef] flex items-center justify-end">
-        {o.amount.toFixed(4)}
+        {Number(o.amount).toFixed(4)}
       </span>
       <span className="flex-1 text-right z-10 font-mono text-[#eaecef] opacity-50 group-hover:opacity-100 flex items-center justify-end">
         {(o.price * o.amount).toFixed(2)}
@@ -44,111 +44,162 @@ const ObRow = ({ o, side }) => {
 const MAX_TRADES = 30;
 
 // Module-level counter — gives every incoming trade a unique, stable id
-// without relying on time+price+qty which can collide on high-volume pairs.
 let _tradeSeq = 0;
 
 // Format a trade timestamp as HH:MM:SS
 const fmtTime = (ms) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 
+// Sanitize numeric input: allow only digits, one dot, and strip leading zeros
+const sanitizeNumeric = (val) => {
+  let s = val.replace(/[^0-9.]/g, '');
+  // Only allow one decimal point
+  const parts = s.split('.');
+  if (parts.length > 2) s = parts[0] + '.' + parts.slice(1).join('');
+  return s;
+};
+
+const buildStaticEntry = (staticCoin) => {
+  const current  = parseFloat(staticCoin.current_price);
+  const ago      = parseFloat(staticCoin.price_24h_ago) || current;
+  const change24h = ago > 0 ? ((current - ago) / ago) * 100 : 0;
+  return {
+    id:                          staticCoin.symbol.toLowerCase(),
+    symbol:                      staticCoin.symbol.toLowerCase(),
+    name:                        staticCoin.symbol,
+    image:                       '/avg-coin.svg',
+    current_price:               current,
+    price_change_percentage_24h: change24h,
+    high_24h:                    parseFloat(staticCoin.max_price),
+    low_24h:                     parseFloat(staticCoin.min_price),
+    total_volume:                0,
+    _isStatic:                   true,
+  };
+};
+
 // --- MAIN COMPONENT ---
 const Trade = () => {
   const { user } = useSelector((state) => state.auth);
   const dispatch = useDispatch();
+  const [searchParams] = useSearchParams();
 
-  const [selectedCoin, setSelectedCoin] = useState({ symbol: 'BTC' });
+  // Read pair from URL query (?pair=ETH/USDT → 'ETH'), default to BTC
+  const initialSymbol = (() => {
+    const p = searchParams.get('pair');
+    if (p && p.includes('/')) return p.split('/')[0].toUpperCase();
+    return 'BTC';
+  })();
+
+  const [selectedCoin, setSelectedCoin] = useState({ symbol: initialSymbol });
   const [marketList,   setMarketList]   = useState([]);
   const [search,       setSearch]       = useState('');
   const [bids,         setBids]         = useState([]);
   const [asks,         setAsks]         = useState([]);
   const [loadingBook,  setLoadingBook]  = useState(false);
-  const [inputPrice,   setInputPrice]   = useState('');
-  const [inputAmount,  setInputAmount]  = useState('');
+
+  // Separate price and amount state for buy and sell sides
+  const [buyPrice,     setBuyPrice]     = useState('');
+  const [buyAmount,    setBuyAmount]    = useState('');
+  const [sellPrice,    setSellPrice]    = useState('');
   const [sellAmount,   setSellAmount]   = useState('');
+
   const [balances,     setBalances]     = useState({});
   const [orderLoading, setOrderLoading] = useState(false);
   const [orderFeedback, setOrderFeedback] = useState(null);
   const [buyOrderType,  setBuyOrderType]  = useState('limit');
   const [sellOrderType, setSellOrderType] = useState('limit');
-  const [kycStatus, setKycStatus] = useState(null); // null=loading, 'approved', 'pending', 'none', 'rejected'
+  const [kycStatus, setKycStatus] = useState(null);
 
-  // Binance live market data — flushed to state on a throttled interval
-  // livePrices: { BTC: { price, change24h, high24h, low24h, volume24h }, ... }
+  // Binance live market data
   const [livePrices,   setLivePrices]   = useState({});
-  // Recent Binance trades for the selected pair
   const [recentTrades, setRecentTrades] = useState([]);
-  // Left-panel tab: 'book' (internal order book) or 'trades' (Binance live trades)
   const [leftTab, setLeftTab] = useState('book');
 
   // Refs that buffer incoming Binance data between render cycles.
-  // Nothing renders until the flush intervals fire — prevents constant re-renders.
-  const pendingTickersRef = useRef({});   // accumulated ticker updates → flush every 1 s
-  const pendingTradesRef  = useRef([]);   // accumulated trade events  → flush every 300 ms
+  const pendingTickersRef = useRef({});
+  const pendingTradesRef  = useRef([]);
 
-  // Flush ticker buffer → livePrices once per second.
-  // Snapshot the ref BEFORE resetting it so the setState callback
-  // reads the captured values, not the already-cleared object.
+  // Flush ticker buffer once per second.
   useEffect(() => {
     const id = setInterval(() => {
       const snapshot = pendingTickersRef.current;
       if (Object.keys(snapshot).length === 0) return;
-      pendingTickersRef.current = {};           // reset first
-      setLivePrices(prev => ({ ...prev, ...snapshot })); // then commit snapshot
+      pendingTickersRef.current = {};
+      setLivePrices(prev => ({ ...prev, ...snapshot }));
     }, 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Flush trade buffer → recentTrades every 300 ms.
+  // Flush trade buffer every 300 ms.
   useEffect(() => {
     const id = setInterval(() => {
       const snapshot = pendingTradesRef.current;
       if (snapshot.length === 0) return;
-      pendingTradesRef.current = [];            // reset first
+      pendingTradesRef.current = [];
       setRecentTrades(prev => [...snapshot, ...prev].slice(0, MAX_TRADES));
     }, 300);
     return () => clearInterval(id);
   }, []);
 
-  // Use a ref so fetchOrderBook can always access latest selectedCoin
   const selectedCoinRef = useRef(selectedCoin);
   useEffect(() => { selectedCoinRef.current = selectedCoin; }, [selectedCoin]);
 
-  // Clear recent trades when the pair changes so stale data doesn't flash
+  // Clear recent trades when the pair changes
   useEffect(() => { setRecentTrades([]); }, [selectedCoin.symbol]);
 
-  // When market order is selected, auto-fill price from Binance live price
-  // (falls back to CoinGecko if stream hasn't connected yet).
+  // Auto-fill market order price from live feed (continuously updated)
   useEffect(() => {
     const livePrice = livePrices[selectedCoin.symbol]?.price;
     const mktObj    = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
     const price     = livePrice ?? mktObj.current_price;
     if (!price) return;
-    if (buyOrderType  === 'market') setInputPrice(String(price));
-    if (sellOrderType === 'market') setInputPrice(String(price));
+    if (buyOrderType  === 'market') setBuyPrice(String(price));
+    if (sellOrderType === 'market') setSellPrice(String(price));
   }, [buyOrderType, sellOrderType, selectedCoin, marketList, livePrices]);
 
-  // FETCH MARKETS (via backend proxy, with static fallback if API is unavailable)
+  // FETCH MARKETS — base list loaded once; static coin price polled every 15s
+  const baseListRef = useRef(null);
+
   useEffect(() => {
-    axios.get(`${API_URL}/api/markets`, {
-      params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
-    })
-    .then(({ data }) => {
-      setMarketList(data);
-    })
-    .catch(() => {
-      setMarketList(prevList => prevList.length > 0 ? prevList : STATIC_COINS);
+    Promise.all([
+      axios.get(`${API_URL}/api/markets`, {
+        params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
+      }).catch(() => ({ data: null })),
+      axios.get(`${API_URL}/api/markets/static-coin`).catch(() => ({ data: null })),
+    ]).then(([marketsRes, staticRes]) => {
+      const base = marketsRes.data || [];
+      baseListRef.current = base;
+      const staticCoin = staticRes.data;
+      if (staticCoin) {
+        setMarketList([...base, buildStaticEntry(staticCoin)]);
+      } else {
+        setMarketList(base);
+      }
     });
   }, []);
 
-  // FETCH ORDER BOOK — uses the exchange's own internal order book
+  // Poll static coin price every 15s so admin price changes reflect immediately
+  useEffect(() => {
+    const refresh = () =>
+      axios.get(`${API_URL}/api/markets/static-coin`).then(({ data }) => {
+        if (!data || !baseListRef.current) return;
+        setMarketList(prev => {
+          const without = prev.filter(c => !c._isStatic);
+          return [...without, buildStaticEntry(data)];
+        });
+      }).catch(() => {});
+
+    const id = setInterval(refresh, 20_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // FETCH ORDER BOOK
   const fetchOrderBook = useCallback(async () => {
     const coin = selectedCoinRef.current;
     const pair = `${coin.symbol}/USDT`;
     try {
       setLoadingBook(true);
-      const { data } = await axios.get(`${API_URL}/api/trade/orderbook`, {
-        params: { pair },
-      });
+      const { data } = await axios.get(`${API_URL}/api/trade/orderbook`, { params: { pair } });
       setAsks((data.asks || []).slice(0, MAX_ROWS));
       setBids((data.bids || []).slice(0, MAX_ROWS));
     } catch {
@@ -158,7 +209,6 @@ const Trade = () => {
     }
   }, []);
 
-  // Initial load only — socket keeps it live after that
   useEffect(() => {
     setLoadingBook(true);
     fetchOrderBook();
@@ -186,48 +236,68 @@ const Trade = () => {
   useTradeSocket({
     pair:            `${selectedCoin.symbol}/USDT`,
     userId:          user?.id,
-
-    // ── Internal exchange events ──────────────────────────────
     onDepthUpdate:   ({ asks, bids }) => {
       setAsks(asks.slice(0, MAX_ROWS));
       setBids(bids.slice(0, MAX_ROWS));
     },
     onBalanceUpdate: fetchBalances,
     onReconnect:     fetchOrderBook,
-
-    // ── Binance market-data events ────────────────────────────
-    // Write into refs only — state is flushed by the throttle intervals above.
-    // This decouples the high-frequency Binance stream from React's render cycle.
     onBinanceTicker: (data) => {
       pendingTickersRef.current[data.symbol] = data;
     },
     onBinanceTrade: (data) => {
       pendingTradesRef.current.unshift({ ...data, _id: _tradeSeq++ });
     },
-    // onBinanceDepth and onBinanceKline are available if you need them later
   });
 
-  // PLACE ORDER
+  // PLACE ORDER — uses the correct price/amount for each side
   const handlePlaceOrder = async (side) => {
-    const qty = side === 'buy' ? inputAmount : sellAmount;
-    if (!inputPrice || !qty) return;
+    const price = side === 'buy' ? buyPrice : sellPrice;
+    const qty   = side === 'buy' ? buyAmount : sellAmount;
+
+    const numPrice = parseFloat(price);
+    const numQty   = parseFloat(qty);
+
+    // Client-side guard: prevent zero, negative, NaN
+    if (!numPrice || numPrice <= 0 || !numQty || numQty <= 0) {
+      setOrderFeedback({ type: 'error', message: 'Price and amount must be positive numbers' });
+      setTimeout(() => setOrderFeedback(null), 4000);
+      return;
+    }
+
     setOrderLoading(true);
     setOrderFeedback(null);
     try {
       const orderType = side === 'buy' ? buyOrderType : sellOrderType;
       const { data } = await axios.post(
         `${API_URL}/api/trade/order`,
-        { pair: `${selectedCoin.symbol}/USDT`, side, type: orderType, price: parseFloat(inputPrice), quantity: parseFloat(qty) },
+        { pair: `${selectedCoin.symbol}/USDT`, side, type: orderType, price: numPrice, quantity: numQty },
         { withCredentials: true }
       );
       const filled = data.executedTrades?.length ?? 0;
+      const actualUSDT = (data.executedTrades ?? []).reduce(
+        (sum, t) => sum + parseFloat(t.price) * parseFloat(t.quantity), 0
+      );
+      const filledQty   = numQty - (data.quantityLeft ?? 0);
+      const isPartial   = orderType === 'market' && (data.quantityLeft ?? 0) > 0;
       setOrderFeedback({
         type: 'success',
         message: filled > 0
-          ? `Order filled — ${filled} trade${filled > 1 ? 's' : ''} executed`
+          ? orderType === 'market' && actualUSDT > 0
+            ? isPartial
+              ? `Partially filled — ${filledQty.toFixed(4)} ${selectedCoin.symbol} for ${actualUSDT.toFixed(2)} USDT (rest refunded)`
+              : `Order filled — ${side === 'buy' ? 'spent' : 'received'} ${actualUSDT.toFixed(2)} USDT`
+            : `Order filled — ${filled} trade${filled > 1 ? 's' : ''} executed`
           : 'Order placed — waiting for a match',
       });
-      setInputAmount(''); setSellAmount(''); setInputPrice('');
+      // Only clear the side that was submitted
+      if (side === 'buy') {
+        setBuyAmount('');
+        if (buyOrderType === 'limit') setBuyPrice('');
+      } else {
+        setSellAmount('');
+        if (sellOrderType === 'limit') setSellPrice('');
+      }
       fetchBalances();
       dispatch(fetchNavbarBalance());
     } catch (err) {
@@ -241,8 +311,9 @@ const Trade = () => {
   // % SHORTCUTS
   const handleBuyPercent = (pct) => {
     const available = balances.USDT?.available ?? 0;
-    if (!inputPrice || !available) return;
-    setInputAmount(((available * pct / 100) / parseFloat(inputPrice)).toFixed(6));
+    const price = parseFloat(buyPrice);
+    if (!price || price <= 0 || !available) return;
+    setBuyAmount(((available * pct / 100) / price).toFixed(6));
   };
   const handleSellPercent = (pct) => {
     const available = balances[selectedCoin.symbol]?.available ?? 0;
@@ -250,15 +321,21 @@ const Trade = () => {
     setSellAmount(((available * pct) / 100).toFixed(6));
   };
 
+  // Click an orderbook row to populate price
+  const handleBookRowClick = (price) => {
+    if (!price) return;
+    const priceStr = String(price);
+    if (buyOrderType  === 'limit') setBuyPrice(priceStr);
+    if (sellOrderType === 'limit') setSellPrice(priceStr);
+  };
+
   // HANDLERS
   const handleCoinClick = (coin) => {
     const symbol = coin.symbol.toUpperCase();
     setSelectedCoin({ symbol });
     setBuyOrderType('limit'); setSellOrderType('limit');
-    setInputPrice(''); setInputAmount(''); setSellAmount('');
-    if (symbol === selectedCoinRef.current.symbol) {
-      fetchOrderBook();
-    }
+    setBuyPrice(''); setBuyAmount('');
+    setSellPrice(''); setSellAmount('');
   };
 
   // DERIVED STATE
@@ -267,32 +344,33 @@ const Trade = () => {
     c.symbol.toLowerCase().includes(search.toLowerCase())
   );
   const mkt      = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol) || {};
-  const liveMkt  = livePrices[selectedCoin.symbol]; // Binance live ticker for selected pair
-  // Prefer Binance live data, fall back to CoinGecko for display
+  const liveMkt  = livePrices[selectedCoin.symbol];
   const dispPrice    = liveMkt?.price              ?? mkt.current_price;
   const dispChange   = liveMkt?.change24h          ?? mkt.price_change_percentage_24h;
   const dispHigh     = liveMkt?.high24h            ?? mkt.high_24h;
   const dispLow      = liveMkt?.low24h             ?? mkt.low_24h;
   const dispVolume   = liveMkt?.volume24h          ?? mkt.total_volume;
   const up           = (dispChange ?? 0) >= 0;
-  const buyTotal  = inputPrice && inputAmount ? (parseFloat(inputPrice) * parseFloat(inputAmount)).toFixed(2) : '0';
-  const sellTotal = inputPrice && sellAmount  ? (parseFloat(inputPrice) * parseFloat(sellAmount)).toFixed(2)  : '0';
+
+  const buyTotal  = buyPrice && buyAmount ? (parseFloat(buyPrice) * parseFloat(buyAmount)).toFixed(2) : '0';
+  const sellTotal = sellPrice && sellAmount ? (parseFloat(sellPrice) * parseFloat(sellAmount)).toFixed(2) : '0';
   const usdtAvail = (balances.USDT?.available ?? 0).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const coinAvail = (balances[selectedCoin.symbol]?.available ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
 
-  // FIX 2 & 3: Orderbook Display Logic
+  // Compute max amount per side for depth bar scaling
+  const maxAskAmount = useMemo(() => asks.reduce((m, o) => Math.max(m, o?.amount ?? 0), 0), [asks]);
+  const maxBidAmount = useMemo(() => bids.reduce((m, o) => Math.max(m, o?.amount ?? 0), 0), [bids]);
+
   const askCount = Math.min(asks.length, MAX_ROWS);
   const askSlots = Array.from({ length: MAX_ROWS }, (_, i) => {
     const emptyCount = MAX_ROWS - askCount;
-    if (i < emptyCount) return null; // These create the "space at the top" to align asks to the bottom
-    
-    // Reverses the index so the lowest price is physically at the bottom of the list!
-    const askIdx = MAX_ROWS - 1 - i; 
+    if (i < emptyCount) return null;
+    const askIdx = MAX_ROWS - 1 - i;
     return asks[askIdx];
   });
-  
+
   const bidSlots = Array.from({ length: MAX_ROWS }, (_, i) => bids[i] ?? null);
-  
+
   const isEmpty = !loadingBook && asks.length === 0 && bids.length === 0;
 
   const PANEL_H = 'lg:h-[800px]';
@@ -342,8 +420,8 @@ const Trade = () => {
       {/* MAIN GRID */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-2 p-2 max-w-[1600px] mx-auto w-full">
 
-        {/* ── LEFT: ORDER BOOK / LIVE TRADES ── */}
-        <div className={`order-4 lg:order-1 lg:col-span-3 bg-[#1e2329] rounded-sm flex flex-col overflow-hidden border border-[#2b3139] min-h-[400px] ${PANEL_H}`}>
+        {/* LEFT: ORDER BOOK / LIVE TRADES */}
+        <div className={`order-4 lg:order-1 lg:col-span-3 bg-[#1e2329] rounded-sm flex flex-col overflow-hidden border border-[#2b3139] h-[620px] ${PANEL_H}`}>
 
           {/* Tab switcher */}
           <div className="flex items-center border-b border-[#2b3139] shrink-0">
@@ -390,20 +468,32 @@ const Trade = () => {
                 </div>
               ) : (
                 <>
-                  <div className="shrink-0">{askSlots.map((o, i) => <ObRow key={i} o={o} side="ask" />)}</div>
+                  <div className="shrink-0">
+                    {askSlots.map((o, i) => (
+                      <div key={i} onClick={() => o && handleBookRowClick(o.price)}>
+                        <ObRow o={o} side="ask" maxAmount={maxAskAmount} />
+                      </div>
+                    ))}
+                  </div>
                   <div className="px-3 py-2 border-y border-[#2b3139] flex items-center justify-between bg-[#0b0e11] shrink-0">
                     <span className={`text-sm font-bold ${up ? 'text-[#0ecb81]' : 'text-[#f6465d]'}`}>
                       ${dispPrice?.toLocaleString() ?? '---'}
                     </span>
                     <span className="text-[10px] text-[#848e9c]">≈ ${dispPrice?.toLocaleString() ?? '---'}</span>
                   </div>
-                  <div className="shrink-0">{bidSlots.map((o, i) => <ObRow key={i} o={o} side="bid" />)}</div>
+                  <div className="shrink-0">
+                    {bidSlots.map((o, i) => (
+                      <div key={i} onClick={() => o && handleBookRowClick(o.price)}>
+                        <ObRow o={o} side="bid" maxAmount={maxBidAmount} />
+                      </div>
+                    ))}
+                  </div>
                 </>
               )}
             </>
           )}
 
-          {/* LIVE TRADES tab — real trades streamed from Binance */}
+          {/* LIVE TRADES tab */}
           {leftTab === 'trades' && (
             <>
               <div className="flex items-center px-3 py-1.5 border-b border-[#2b3139] shrink-0">
@@ -438,7 +528,7 @@ const Trade = () => {
           )}
         </div>
 
-        {/* ── CENTER: CHART + FORM ── */}
+        {/* CENTER: CHART + FORM */}
         <div className={`order-1 lg:order-2 lg:col-span-6 flex flex-col gap-2 min-h-0 ${PANEL_H}`}>
           <div className="h-[320px] lg:h-auto lg:flex-1 lg:min-h-0 bg-[#1e2329] rounded-sm border border-[#2b3139] overflow-hidden">
             <TradingViewChart symbol={`BINANCE:${selectedCoin.symbol}USDT`} />
@@ -461,8 +551,9 @@ const Trade = () => {
                       const t = e.target.value;
                       setBuyOrderType(t);
                       if (t === 'market') {
-                        const price = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol)?.current_price;
-                        if (price) setInputPrice(String(price));
+                        const price = livePrices[selectedCoin.symbol]?.price
+                          ?? marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol)?.current_price;
+                        if (price) setBuyPrice(String(price));
                       }
                     }}
                     className="w-full bg-[#2b3139] border border-[#363c45] text-[#eaecef] text-sm rounded px-3 py-2 appearance-none outline-none focus:border-[#f0b90b] cursor-pointer transition-colors"
@@ -479,12 +570,13 @@ const Trade = () => {
                   </label>
                   <div className={`bg-[#2b3139] border rounded flex items-center px-3 py-1.5 transition-colors ${buyOrderType === 'market' ? 'border-[#f0b90b]/40 opacity-70' : 'border-[#363c45] focus-within:border-[#f0b90b]'}`}>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]"
                       placeholder="0.00"
-                      value={inputPrice}
+                      value={buyPrice}
                       readOnly={buyOrderType === 'market'}
-                      onChange={e => buyOrderType === 'limit' && setInputPrice(e.target.value)}
+                      onChange={e => buyOrderType === 'limit' && setBuyPrice(sanitizeNumeric(e.target.value))}
                     />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">USDT</span>
                   </div>
@@ -492,7 +584,14 @@ const Trade = () => {
                 <div>
                   <label className="text-[#848e9c] text-[10px] mb-1 block">Amount</label>
                   <div className="bg-[#2b3139] border border-[#363c45] focus-within:border-[#f0b90b] rounded flex items-center px-3 py-1.5 transition-colors">
-                    <input type="number" className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]" placeholder="0.00" value={inputAmount} onChange={e => setInputAmount(e.target.value)} />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]"
+                      placeholder="0.00"
+                      value={buyAmount}
+                      onChange={e => setBuyAmount(sanitizeNumeric(e.target.value))}
+                    />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">{selectedCoin.symbol}</span>
                   </div>
                 </div>
@@ -502,7 +601,10 @@ const Trade = () => {
                   ))}
                 </div>
                 <div>
-                  <label className="text-[#848e9c] text-[10px] mb-1 block">Total</label>
+                  <label className="text-[#848e9c] text-[10px] mb-1 block">
+                    {buyOrderType === 'market' ? 'Est. Total' : 'Total'}
+                    {buyOrderType === 'market' && <span className="ml-1 text-[#848e9c] font-normal"></span>}
+                  </label>
                   <div className="bg-[#2b3139] border border-[#363c45] rounded flex items-center px-3 py-1.5 opacity-60">
                     <input type="text" disabled className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono cursor-not-allowed" value={buyTotal} />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">USDT</span>
@@ -516,7 +618,7 @@ const Trade = () => {
                     {kycStatus === null ? 'Checking KYC…' : 'Complete KYC to Trade →'}
                   </Link>
                 ) : (
-                  <button onClick={() => handlePlaceOrder('buy')} disabled={orderLoading || !inputPrice || !inputAmount} className="w-full py-2 bg-[#0ecb81] hover:bg-[#0bb874] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
+                  <button onClick={() => handlePlaceOrder('buy')} disabled={orderLoading || !buyPrice || !buyAmount} className="w-full py-2 bg-[#0ecb81] hover:bg-[#0bb874] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
                     {orderLoading ? 'Placing…' : `Buy ${selectedCoin.symbol}`}
                   </button>
                 )}
@@ -534,8 +636,9 @@ const Trade = () => {
                       const t = e.target.value;
                       setSellOrderType(t);
                       if (t === 'market') {
-                        const price = marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol)?.current_price;
-                        if (price) setInputPrice(String(price));
+                        const price = livePrices[selectedCoin.symbol]?.price
+                          ?? marketList.find(m => m.symbol.toUpperCase() === selectedCoin.symbol)?.current_price;
+                        if (price) setSellPrice(String(price));
                       }
                     }}
                     className="w-full bg-[#2b3139] border border-[#363c45] text-[#eaecef] text-sm rounded px-3 py-2 appearance-none outline-none focus:border-[#f0b90b] cursor-pointer transition-colors"
@@ -552,12 +655,13 @@ const Trade = () => {
                   </label>
                   <div className={`bg-[#2b3139] border rounded flex items-center px-3 py-1.5 transition-colors ${sellOrderType === 'market' ? 'border-[#f0b90b]/40 opacity-70' : 'border-[#363c45] focus-within:border-[#f0b90b]'}`}>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="decimal"
                       className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]"
                       placeholder="0.00"
-                      value={inputPrice}
+                      value={sellPrice}
                       readOnly={sellOrderType === 'market'}
-                      onChange={e => sellOrderType === 'limit' && setInputPrice(e.target.value)}
+                      onChange={e => sellOrderType === 'limit' && setSellPrice(sanitizeNumeric(e.target.value))}
                     />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">USDT</span>
                   </div>
@@ -565,7 +669,14 @@ const Trade = () => {
                 <div>
                   <label className="text-[#848e9c] text-[10px] mb-1 block">Amount</label>
                   <div className="bg-[#2b3139] border border-[#363c45] focus-within:border-[#f0b90b] rounded flex items-center px-3 py-1.5 transition-colors">
-                    <input type="number" className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]" placeholder="0.00" value={sellAmount} onChange={e => setSellAmount(e.target.value)} />
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono placeholder-[#848e9c]"
+                      placeholder="0.00"
+                      value={sellAmount}
+                      onChange={e => setSellAmount(sanitizeNumeric(e.target.value))}
+                    />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">{selectedCoin.symbol}</span>
                   </div>
                 </div>
@@ -575,7 +686,10 @@ const Trade = () => {
                   ))}
                 </div>
                 <div>
-                  <label className="text-[#848e9c] text-[10px] mb-1 block">Total</label>
+                  <label className="text-[#848e9c] text-[10px] mb-1 block">
+                    {sellOrderType === 'market' ? 'Est. Total' : 'Total'}
+                    {sellOrderType === 'market' && <span className="ml-1 text-[#848e9c] font-normal">(actual may differ)</span>}
+                  </label>
                   <div className="bg-[#2b3139] border border-[#363c45] rounded flex items-center px-3 py-1.5 opacity-60">
                     <input type="text" disabled className="bg-transparent text-[#eaecef] text-sm w-full outline-none font-mono cursor-not-allowed" value={sellTotal} />
                     <span className="text-[#848e9c] text-[10px] font-semibold pl-2 shrink-0">USDT</span>
@@ -589,7 +703,7 @@ const Trade = () => {
                     {kycStatus === null ? 'Checking KYC…' : 'Complete KYC to Trade →'}
                   </Link>
                 ) : (
-                  <button onClick={() => handlePlaceOrder('sell')} disabled={orderLoading || !inputPrice || !sellAmount} className="w-full py-2 bg-[#f6465d] hover:bg-[#e03d52] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
+                  <button onClick={() => handlePlaceOrder('sell')} disabled={orderLoading || !sellPrice || !sellAmount} className="w-full py-2 bg-[#f6465d] hover:bg-[#e03d52] disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm rounded transition-colors active:scale-[0.98]">
                     {orderLoading ? 'Placing…' : `Sell ${selectedCoin.symbol}`}
                   </button>
                 )}
@@ -598,7 +712,7 @@ const Trade = () => {
           </div>
         </div>
 
-        {/* ── RIGHT: MARKET LIST ── */}
+        {/* RIGHT: MARKET LIST */}
         <div className={`order-3 lg:order-3 lg:col-span-3 bg-[#1e2329] rounded-sm flex flex-col overflow-hidden border border-[#2b3139] h-[400px] ${PANEL_H}`}>
           <div className="p-2.5 border-b border-[#2b3139]">
             <div className="relative">
@@ -618,7 +732,6 @@ const Trade = () => {
               const sym        = coin.symbol.toUpperCase();
               const isSelected = selectedCoin.symbol === sym;
 
-              // Prefer Binance live price/change; fall back to CoinGecko snapshot
               const live        = livePrices[sym];
               const displayPrice  = live?.price    ?? coin.current_price;
               const displayChange = live?.change24h ?? coin.price_change_percentage_24h;
@@ -632,8 +745,8 @@ const Trade = () => {
                 >
                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
                     <div className="relative shrink-0">
-                      <img src={coin.image} alt={sym} className="w-4 h-4 rounded-full" />
-                    </div>
+                    <img src={coin.image} alt={sym} className="w-4 h-4 rounded-full" />
+                  </div>
                     <div className="min-w-0">
                       <div className="text-[11px] font-bold text-[#eaecef] uppercase leading-tight">{sym}</div>
                       <div className="text-[9px] text-[#848e9c] leading-tight">{(coin.total_volume / 1e6).toFixed(1)}M vol</div>

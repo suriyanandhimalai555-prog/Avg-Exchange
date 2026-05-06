@@ -1,6 +1,7 @@
 const express       = require('express');
 const axios         = require('axios');
 const binanceStream = require('../services/binanceStreamService');
+const db            = require('../db');
 const router        = express.Router();
 
 // ── In-memory response cache ──────────────────────────────────────────────────
@@ -71,6 +72,19 @@ router.get('/live', (req, res) => {
     return res.status(503).json({ error: 'Live prices not yet available — stream is connecting' });
   }
   res.json(tickers);
+});
+
+// GET /api/markets/static-coin — public, returns the enabled static coin for the trade page
+router.get('/static-coin', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT symbol, min_price, max_price, current_price, price_24h_ago FROM static_coin_config WHERE enabled = TRUE LIMIT 1`
+    );
+    if (!rows[0]) return res.json(null);
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json(null);
+  }
 });
 
 module.exports = router;

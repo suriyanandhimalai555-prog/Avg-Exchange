@@ -13,7 +13,8 @@
 
 require('dotenv').config();
 const { login, getClient } = require('./src/auth');
-const MarketMaker = require('./src/marketMaker');
+const MarketMaker      = require('./src/marketMaker');
+const StaticCoinMaker  = require('./src/staticCoinMaker');
 const config = require('./config');
 
 async function main() {
@@ -37,9 +38,13 @@ async function main() {
     await new Promise(r => setTimeout(r, 2000));
   }
 
+  // Static coin maker — reads config from admin API, no-ops if not configured
+  const staticMaker = new StaticCoinMaker(client);
+  await staticMaker.start();
+
   const shutdown = async (signal) => {
     console.log(`\n[bot] Received ${signal} — shutting down all pairs…`);
-    await Promise.allSettled(bots.map(b => b.stop()));
+    await Promise.allSettled([...bots.map(b => b.stop()), staticMaker.stop()]);
     console.log('[bot] Shut down cleanly');
     process.exit(0);
   };

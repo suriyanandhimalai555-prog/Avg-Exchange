@@ -12,6 +12,7 @@ const rateLimit = require('express-rate-limit');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
 const engine = require('../services/engineService');
+const email  = require('../services/emailService');
 
 const VALID_SIDES = new Set(['buy', 'sell']);
 const VALID_TYPES = new Set(['limit', 'market']);
@@ -23,7 +24,33 @@ const SUPPORTED_PAIRS = new Set([
   'DOT/USDT', 'LINK/USDT', 'UNI/USDT', 'ATOM/USDT', 'TRX/USDT',
 ]);
 
-const isValidPair = (pair) => typeof pair === 'string' && SUPPORTED_PAIRS.has(pair);
+// In-memory cache for the admin-configured static coin pair (e.g. 'AVG/USDT').
+// Refreshed from DB whenever a non-standard pair is presented, so the trade
+// route never needs a restart when the admin adds or renames the coin.
+let _staticCoinPair  = null;
+let _staticCoinFetch = 0;            // timestamp of last DB check
+const STATIC_COIN_TTL = 30_000;     // re-check DB at most every 30 s
+
+const isValidPair = async (pair) => {
+  if (typeof pair !== 'string') return false;
+  if (SUPPORTED_PAIRS.has(pair))  return true;
+
+  // Rate-limit DB lookups
+  const now = Date.now();
+  if (_staticCoinPair && now - _staticCoinFetch < STATIC_COIN_TTL) {
+    return pair === _staticCoinPair;
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT symbol FROM static_coin_config WHERE enabled = TRUE LIMIT 1`
+    );
+    _staticCoinPair  = rows[0] ? `${rows[0].symbol}/USDT` : null;
+    _staticCoinFetch = now;
+  } catch (_) {}
+
+  return pair === _staticCoinPair;
+};
 
 // Rate limiters for trading endpoints
 const orderLimiter = rateLimit({
@@ -64,9 +91,9 @@ module.exports = (io) => {
   // ── GET /api/trade/orderbook?pair=BTC/USDT ───────────────
   // Public endpoint — no auth needed (market data is public on every exchange).
   // Must be registered BEFORE router.use(requireAuth).
-  router.get('/orderbook', (req, res) => {
+  router.get('/orderbook', async (req, res) => {
     const { pair } = req.query;
-    if (!pair || !isValidPair(pair)) {
+    if (!pair || !(await isValidPair(pair))) {
       return res.status(400).json({ error: 'pair query param required (e.g. ?pair=BTC/USDT)' });
     }
     const depth = engine.getDepth(pair);
@@ -104,7 +131,7 @@ module.exports = (io) => {
     if (!VALID_TYPES.has(type)) {
       return res.status(400).json({ error: 'type must be "limit" or "market"' });
     }
-    if (!isValidPair(pair)) {
+    if (!(await isValidPair(pair))) {
       return res.status(400).json({ error: 'Pair must be in format SYMBOL/USDT (e.g. BTC/USDT)' });
     }
 
@@ -238,10 +265,69 @@ module.exports = (io) => {
     // Signal the admin dashboard to refresh stats + orders (debounced on the client)
     io.emit('admin:refresh');
 
-    // Notify each party of their balance change
+    // ── WebSocket balance updates ───────────────────────────
     for (const trade of executedTrades) {
       io.to(`user:${trade.buyer_id}`).emit('balance_update', { userId: trade.buyer_id });
       io.to(`user:${trade.seller_id}`).emit('balance_update', { userId: trade.seller_id });
+    }
+
+    // ── Trade notification emails (Binance-style) ───────────
+    // Rule: email only on ORDER COMPLETION, never on individual fills.
+    //   • Placing user  → email only if quantityLeft === 0 (fully filled)
+    //   • Counterparty  → email only if their resting order is now fully consumed
+    // This prevents spamming when one order sweeps many price levels.
+    if (executedTrades.length > 0) {
+      ;(async () => {
+        try {
+          const counterpartyRole = side === 'buy' ? 'sell' : 'buy';
+
+          // Aggregate fills for the placing user (avg price, total qty)
+          let totalFillQty   = new Decimal(0);
+          let totalFillValue = new Decimal(0);
+          let lastExecutedAt = null;
+          for (const t of executedTrades) {
+            totalFillQty   = totalFillQty.plus(t.quantity);
+            totalFillValue = totalFillValue.plus(new Decimal(t.price).mul(t.quantity));
+            lastExecutedAt = t.executed_at;
+          }
+
+          // 1. Placing user:
+          //   - Market orders: always email if any fills executed (order is done regardless of quantityLeft)
+          //   - Limit orders:  only email when fully filled (quantityLeft === 0); partial fills rest in book
+          const orderComplete = type === 'market' || quantityLeft === 0;
+          if (orderComplete) {
+            const userRes = await db.query('SELECT email, is_admin FROM "User" WHERE id = $1', [userId]);
+            const usr = userRes.rows[0];
+            if (usr?.email && !usr.is_admin) {
+              const avgPrice = totalFillValue.div(totalFillQty);
+              email.sendTradeNotification(usr.email, {
+                price:       avgPrice.toFixed(10),
+                quantity:    totalFillQty.toFixed(10),
+                executed_at: lastExecutedAt,
+              }, side, pair);
+            }
+          }
+
+          // 2. Counterparties — only when their resting order is fully consumed
+          for (const t of executedTrades) {
+            const cpId      = side === 'buy' ? t.seller_id   : t.buyer_id;
+            const cpOrderId = side === 'buy' ? t.sell_order_id : t.buy_order_id;
+
+            const [orderRes, cpRes] = await Promise.all([
+              db.query('SELECT status FROM orders WHERE id = $1', [cpOrderId]),
+              db.query('SELECT email, is_admin FROM "User" WHERE id = $1', [cpId]),
+            ]);
+
+            if (orderRes.rows[0]?.status !== 'filled') continue; // still open → no email yet
+            const cp = cpRes.rows[0];
+            if (cp?.email && !cp.is_admin) {
+              email.sendTradeNotification(cp.email, t, counterpartyRole, pair);
+            }
+          }
+        } catch (err) {
+          console.error('[trade] Failed to send trade notification emails:', err.message);
+        }
+      })();
     }
 
     res.status(201).json({

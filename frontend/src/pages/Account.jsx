@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
+import { Link } from 'react-router-dom';
 import {
   IoShieldCheckmarkOutline,
   IoDocumentTextOutline,
@@ -8,25 +9,28 @@ import {
   IoCheckmarkCircle,
   IoCloseCircle,
   IoLockClosedOutline,
+  IoMailOutline,
+  IoCalendarOutline,
+  IoPeopleOutline,
+  IoCopyOutline,
 } from 'react-icons/io5';
 import API_URL from '../config/api';
 
 const Account = () => {
   const { user } = useSelector((state) => state.auth);
 
-  const [kycStatus, setKycStatus]   = useState('loading'); // loading | none | pending | approved | rejected
+  const [kycStatus, setKycStatus]   = useState('loading');
+  const [kycNote, setKycNote]       = useState('');
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
 
-  // Controlled form state
   const [fullName,       setFullName]       = useState('');
   const [dob,            setDob]            = useState('');
   const [documentType,   setDocumentType]   = useState('passport');
   const [documentNumber, setDocumentNumber] = useState('');
   const [file,           setFile]           = useState(null);
-  const [uploadProgress, setUploadProgress] = useState(0); // 0-100
+  const [uploadProgress, setUploadProgress] = useState(0);
 
-  // Change-password state
   const [pwCurrent,  setPwCurrent]  = useState('');
   const [pwNew,      setPwNew]      = useState('');
   const [pwConfirm,  setPwConfirm]  = useState('');
@@ -34,12 +38,16 @@ const Account = () => {
   const [pwError,    setPwError]    = useState('');
   const [pwSuccess,  setPwSuccess]  = useState(false);
 
-  // Load existing KYC status on mount
+  const [copied, setCopied] = useState(false);
+
   useEffect(() => {
     if (!user) return;
     fetch(`${API_URL}/api/kyc/status`, { credentials: 'include' })
       .then(r => r.json())
-      .then(data => setKycStatus(data.status ?? 'none'))
+      .then(data => {
+        setKycStatus(data.status ?? 'none');
+        setKycNote(data.reviewer_note ?? '');
+      })
       .catch(() => setKycStatus('none'));
   }, [user]);
 
@@ -48,14 +56,10 @@ const Account = () => {
     setError('');
     setUploadProgress(0);
 
-    if (!file) {
-      setError('Please select a document to upload.');
-      return;
-    }
+    if (!file) { setError('Please select a document to upload.'); return; }
 
     setLoading(true);
     try {
-      // Step 1: Get a presigned S3 PUT URL from our backend
       const urlRes = await fetch(
         `${API_URL}/api/kyc/upload-url?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type)}`,
         { credentials: 'include' }
@@ -63,27 +67,23 @@ const Account = () => {
       const { uploadUrl, key, error: urlErr } = await urlRes.json();
       if (!urlRes.ok) throw new Error(urlErr || 'Failed to get upload URL');
 
-      // Step 2: Upload the file directly to S3 (never touches our server)
       setUploadProgress(10);
       const uploadRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
         body: file,
       });
-      if (!uploadRes.ok) throw new Error('File upload to S3 failed');
+      if (!uploadRes.ok) throw new Error('File upload failed');
       setUploadProgress(80);
 
-      // Step 3: Submit the KYC form with the S3 key
       const submitRes = await fetch(`${API_URL}/api/kyc/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          full_name:       fullName,
-          date_of_birth:   dob,
-          document_type:   documentType,
-          document_number: documentNumber,
-          document_key:    key,
+          full_name: fullName, date_of_birth: dob,
+          document_type: documentType, document_number: documentNumber,
+          document_key: key,
         }),
       });
       const data = await submitRes.json();
@@ -117,256 +117,289 @@ const Account = () => {
     finally { setPwLoading(false); }
   };
 
+  const copyReferral = () => {
+    if (!user?.referral_code) return;
+    navigator.clipboard.writeText(user.referral_code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const memberSince = user?.created_at
+    ? new Date(user.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+    : '—';
+
   if (kycStatus === 'loading') {
     return (
-      <div className="min-h-screen bg-[#0b0c0e] flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#00D68F] border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#0b0e11] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-[#f0b90b] border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
+  const KYC_BADGE = {
+    approved: { label: 'Verified',   color: 'text-[#0ecb81]', bg: 'bg-[#0ecb81]/10', border: 'border-[#0ecb81]/20', icon: <IoCheckmarkCircle size={14} /> },
+    pending:  { label: 'Under Review', color: 'text-[#f0b90b]', bg: 'bg-[#f0b90b]/10', border: 'border-[#f0b90b]/20', icon: <IoTimeOutline size={14} /> },
+    rejected: { label: 'Rejected',   color: 'text-[#f6465d]', bg: 'bg-[#f6465d]/10', border: 'border-[#f6465d]/20', icon: <IoCloseCircle size={14} /> },
+    none:     { label: 'Not Verified', color: 'text-[#848e9c]', bg: 'bg-[#848e9c]/10', border: 'border-[#848e9c]/20', icon: <IoShieldCheckmarkOutline size={14} /> },
+  };
+  const badge = KYC_BADGE[kycStatus] || KYC_BADGE.none;
+
+  const inputCls = "w-full bg-[#0b0e11] border border-[#2b3139] rounded-lg px-4 py-3 text-sm text-[#eaecef] placeholder-[#848e9c] outline-none focus:border-[#f0b90b] transition-colors";
+  const labelCls = "text-xs font-semibold text-[#848e9c] uppercase tracking-wide mb-1.5 block";
+
   return (
-    <div className="min-h-screen bg-[#0b0c0e] text-white pt-4 px-4 pb-20 flex flex-col items-center">
+    <div className="min-h-screen bg-[#0b0e11] text-[#eaecef]">
 
-      {/* Header */}
-      <div className="w-full max-w-3xl mt-10 mb-8 text-center">
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#00D68F]/10 mb-4">
-          <IoShieldCheckmarkOutline className="text-[#00D68F]" size={32} />
-        </div>
-        <h1 className="text-3xl md:text-4xl font-bold mb-3 text-white">Account Verification</h1>
-        <p className="text-gray-400">
-          Complete your KYC verification to unlock trading and increase withdrawal limits.
-        </p>
-      </div>
-
-      <div className="w-full max-w-3xl bg-[#181a20] rounded-2xl border border-white/[0.08] shadow-2xl overflow-hidden">
-        <div className="p-6 md:p-8">
-
-          {/* ── APPROVED ── */}
-          {kycStatus === 'approved' && (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="w-24 h-24 bg-[#00D68F]/10 rounded-full flex items-center justify-center mb-6 border border-[#00D68F]/20">
-                <IoCheckmarkCircle className="text-[#00D68F]" size={48} />
-              </div>
-              <h2 className="text-2xl font-bold text-white mb-3">Verification Approved</h2>
-              <p className="text-gray-400 max-w-md">
-                Your identity has been verified. You have full access to all trading features.
-              </p>
+      {/* ── PROFILE HEADER ── */}
+      <div className="bg-[#1e2329] border-b border-[#2b3139]">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-5">
+            {/* Avatar */}
+            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#f0b90b] to-[#d4a300] flex items-center justify-center text-black text-2xl font-bold shrink-0 shadow-lg shadow-[#f0b90b]/10">
+              {(user?.name?.[0] || user?.email?.[0] || 'U').toUpperCase()}
             </div>
-          )}
 
-          {/* ── PENDING ── */}
-          {kycStatus === 'pending' && (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="w-24 h-24 bg-yellow-500/10 rounded-full flex items-center justify-center mb-6 border border-yellow-500/20">
-                <IoTimeOutline className="text-yellow-500" size={48} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-3 flex-wrap">
+                <h1 className="text-xl font-bold text-[#eaecef] capitalize">
+                  {user?.name || user?.email?.split('@')[0] || 'Trader'}
+                </h1>
+                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border ${badge.color} ${badge.bg} ${badge.border}`}>
+                  {badge.icon} {badge.label}
+                </span>
               </div>
-              <h2 className="text-2xl font-bold text-white mb-3">Verification Under Review</h2>
-              <p className="text-gray-400 max-w-md leading-relaxed">
-                Your documents are being reviewed by our compliance team.
-                This usually takes <strong className="text-white">1–3 business days</strong>.
-                We will notify you via email once complete.
-              </p>
-            </div>
-          )}
 
-          {/* ── REJECTED — allow re-submission ── */}
-          {kycStatus === 'rejected' && (
-            <div className="mb-6 flex items-start gap-3 bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-              <IoCloseCircle className="text-red-400 mt-0.5 shrink-0" size={20} />
-              <div>
-                <p className="text-red-400 font-semibold text-sm">Verification Rejected</p>
-                <p className="text-gray-400 text-sm mt-1">
-                  Your previous submission was not accepted. Please re-submit with a clear, valid document.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* ── KYC FORM (none or rejected) ── */}
-          {(kycStatus === 'none' || kycStatus === 'rejected') && (
-            <>
-              <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                <IoPersonOutline className="text-[#00D68F]" />
-                Personal Details
-              </h2>
-
-              {error && (
-                <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
-                  {error}
-                </div>
-              )}
-
-              <form className="flex flex-col gap-6" onSubmit={handleSubmit}>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold text-gray-300">Full Legal Name</label>
-                    <input
-                      type="text"
-                      required
-                      value={fullName}
-                      onChange={e => setFullName(e.target.value)}
-                      placeholder="e.g., John Doe"
-                      className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <label className="text-sm font-semibold text-gray-300">Date of Birth</label>
-                    <input
-                      type="date"
-                      required
-                      value={dob}
-                      onChange={e => setDob(e.target.value)}
-                      className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors [color-scheme:dark]"
-                    />
-                  </div>
-                </div>
-
-                <div className="w-full h-px bg-white/[0.05]" />
-
-                <h2 className="text-xl font-semibold flex items-center gap-2">
-                  <IoDocumentTextOutline className="text-[#00D68F]" />
-                  Identity Verification
-                </h2>
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold text-gray-300">Document Type</label>
-                  <select
-                    value={documentType}
-                    onChange={e => setDocumentType(e.target.value)}
-                    className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors appearance-none cursor-pointer"
+              <div className="flex items-center gap-5 mt-2 flex-wrap">
+                <span className="flex items-center gap-1.5 text-xs text-[#848e9c]">
+                  <IoMailOutline size={13} /> {user?.email || '—'}
+                </span>
+                <span className="flex items-center gap-1.5 text-xs text-[#848e9c]">
+                  <IoCalendarOutline size={13} /> Member since {memberSince}
+                </span>
+                {user?.referral_code && (
+                  <button
+                    onClick={copyReferral}
+                    className="flex items-center gap-1.5 text-xs text-[#848e9c] hover:text-[#f0b90b] transition-colors group"
                   >
-                    <option value="passport">Passport</option>
-                    <option value="national_id">National ID Card</option>
-                    <option value="driver_license">Driver&apos;s License</option>
-                  </select>
-                </div>
+                    <IoPeopleOutline size={13} />
+                    Referral: <span className="font-mono font-bold text-[#eaecef] group-hover:text-[#f0b90b]">{user.referral_code}</span>
+                    <IoCopyOutline size={11} className="opacity-50 group-hover:opacity-100" />
+                    {copied && <span className="text-[#0ecb81] text-[10px] font-semibold ml-1">Copied!</span>}
+                  </button>
+                )}
+                {user?.referral_count > 0 && (
+                  <span className="text-xs text-[#848e9c]">
+                    {user.referral_count} referral{user.referral_count > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold text-gray-300">Document Number</label>
-                  <input
-                    type="text"
-                    required
-                    value={documentNumber}
-                    onChange={e => setDocumentNumber(e.target.value)}
-                    placeholder="Enter ID number"
-                    className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
-                  />
-                </div>
+      {/* ── CONTENT ── */}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 flex flex-col gap-5 pb-20">
 
-                <div className="flex flex-col gap-2">
-                  <label className="text-sm font-semibold text-gray-300">Upload Document Proof</label>
-                  <div className="border-2 border-dashed border-white/[0.1] rounded-xl p-6 text-center hover:border-[#00D68F]/50 transition-colors bg-[#0b0c0e]/50">
-                    <input
-                      type="file"
-                      required
-                      accept=".png,.jpg,.jpeg,.pdf"
-                      onChange={e => setFile(e.target.files[0] || null)}
-                      className="block w-full text-sm text-gray-400
-                        file:mr-4 file:py-2 file:px-4
-                        file:rounded-full file:border-0
-                        file:text-sm file:font-semibold
-                        file:bg-[#00D68F]/10 file:text-[#00D68F]
-                        hover:file:bg-[#00D68F]/20 cursor-pointer"
-                    />
-                    <p className="text-xs text-gray-500 mt-3">PNG, JPG, or PDF — max 5 MB</p>
-                    {file && <p className="text-xs text-[#00D68F] mt-1">{file.name} ({(file.size / 1024).toFixed(0)} KB)</p>}
-                    {loading && uploadProgress > 0 && (
-                      <div className="mt-3 w-full">
-                        <div className="flex justify-between text-xs text-gray-400 mb-1">
-                          <span>{uploadProgress < 80 ? 'Uploading to S3…' : uploadProgress < 100 ? 'Submitting…' : 'Done!'}</span>
-                          <span>{uploadProgress}%</span>
-                        </div>
-                        <div className="w-full bg-white/10 rounded-full h-1.5">
-                          <div
-                            className="bg-[#00D68F] h-1.5 rounded-full transition-all duration-300"
-                            style={{ width: `${uploadProgress}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
+        {/* ── CARD: KYC VERIFICATION ── */}
+        <div className="bg-[#1e2329] border border-[#2b3139] rounded-xl overflow-hidden">
+          <div className="flex items-center gap-3 px-6 py-4 border-b border-[#2b3139]">
+            <IoShieldCheckmarkOutline size={18} className="text-[#f0b90b]" />
+            <h2 className="text-sm font-bold uppercase tracking-wide text-[#eaecef]">Identity Verification</h2>
+          </div>
+
+          <div className="p-6">
+
+            {/* APPROVED */}
+            {kycStatus === 'approved' && (
+              <div className="flex items-center gap-4 p-5 rounded-xl bg-[#0ecb81]/5 border border-[#0ecb81]/15">
+                <div className="w-14 h-14 rounded-full bg-[#0ecb81]/10 flex items-center justify-center shrink-0">
+                  <IoCheckmarkCircle className="text-[#0ecb81]" size={28} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#eaecef]">Identity Verified</h3>
+                  <p className="text-sm text-[#848e9c] mt-0.5">
+                    Your account is fully verified. You have access to all trading features and higher limits.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* PENDING */}
+            {kycStatus === 'pending' && (
+              <div className="flex items-center gap-4 p-5 rounded-xl bg-[#f0b90b]/5 border border-[#f0b90b]/15">
+                <div className="w-14 h-14 rounded-full bg-[#f0b90b]/10 flex items-center justify-center shrink-0">
+                  <IoTimeOutline className="text-[#f0b90b]" size={28} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#eaecef]">Verification Under Review</h3>
+                  <p className="text-sm text-[#848e9c] mt-0.5">
+                    Your documents are being reviewed. This typically takes <strong className="text-[#eaecef]">1-3 business days</strong>. We'll notify you via email.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* REJECTED */}
+            {kycStatus === 'rejected' && (
+              <div className="mb-6 flex items-center gap-4 p-5 rounded-xl bg-[#f6465d]/5 border border-[#f6465d]/15">
+                <div className="w-14 h-14 rounded-full bg-[#f6465d]/10 flex items-center justify-center shrink-0">
+                  <IoCloseCircle className="text-[#f6465d]" size={28} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#eaecef]">Verification Rejected</h3>
+                  <p className="text-sm text-[#848e9c] mt-0.5">
+                    {kycNote || 'Your submission was not accepted. Please re-submit with a clear, valid document.'}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* KYC FORM */}
+            {(kycStatus === 'none' || kycStatus === 'rejected') && (
+              <>
+                {kycStatus === 'none' && (
+                  <p className="text-sm text-[#848e9c] mb-6">
+                    Complete identity verification to unlock trading. You'll need a government-issued ID.
+                  </p>
+                )}
+
+                {error && (
+                  <div className="mb-5 px-4 py-3 bg-[#f6465d]/10 border border-[#f6465d]/20 rounded-lg text-[#f6465d] text-sm font-medium">
+                    {error}
                   </div>
+                )}
+
+                <form className="flex flex-col gap-5" onSubmit={handleSubmit}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <IoPersonOutline size={16} className="text-[#f0b90b]" />
+                    <span className="text-xs font-bold uppercase tracking-wide text-[#848e9c]">Personal Information</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Full Legal Name</label>
+                      <input type="text" required value={fullName} onChange={e => setFullName(e.target.value)}
+                        placeholder="As shown on your ID" className={inputCls} />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Date of Birth</label>
+                      <input type="date" required value={dob} onChange={e => setDob(e.target.value)}
+                        className={`${inputCls} [color-scheme:dark]`} />
+                    </div>
+                  </div>
+
+                  <div className="w-full h-px bg-[#2b3139] my-1" />
+
+                  <div className="flex items-center gap-2 mb-1">
+                    <IoDocumentTextOutline size={16} className="text-[#f0b90b]" />
+                    <span className="text-xs font-bold uppercase tracking-wide text-[#848e9c]">Document Details</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Document Type</label>
+                      <select value={documentType} onChange={e => setDocumentType(e.target.value)}
+                        className={`${inputCls} appearance-none cursor-pointer`}>
+                        <option value="passport">Passport</option>
+                        <option value="national_id">National ID Card</option>
+                        <option value="driver_license">Driver's License</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelCls}>Document Number</label>
+                      <input type="text" required value={documentNumber} onChange={e => setDocumentNumber(e.target.value)}
+                        placeholder="Enter ID number" className={inputCls} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>Upload Document</label>
+                    <div className="border-2 border-dashed border-[#2b3139] rounded-xl p-6 text-center hover:border-[#f0b90b]/40 transition-colors bg-[#0b0e11]/50">
+                      <input
+                        type="file" required accept=".png,.jpg,.jpeg,.pdf"
+                        onChange={e => setFile(e.target.files[0] || null)}
+                        className="block w-full text-sm text-[#848e9c]
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-full file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-[#f0b90b]/10 file:text-[#f0b90b]
+                          hover:file:bg-[#f0b90b]/20 cursor-pointer"
+                      />
+                      <p className="text-[11px] text-[#848e9c] mt-3">PNG, JPG, or PDF — max 5 MB</p>
+                      {file && <p className="text-[11px] text-[#f0b90b] mt-1 font-medium">{file.name} ({(file.size / 1024).toFixed(0)} KB)</p>}
+                      {loading && uploadProgress > 0 && (
+                        <div className="mt-3 w-full max-w-xs mx-auto">
+                          <div className="flex justify-between text-[11px] text-[#848e9c] mb-1">
+                            <span>{uploadProgress < 80 ? 'Uploading…' : uploadProgress < 100 ? 'Submitting…' : 'Done!'}</span>
+                            <span>{uploadProgress}%</span>
+                          </div>
+                          <div className="w-full bg-[#2b3139] rounded-full h-1.5">
+                            <div className="bg-[#f0b90b] h-1.5 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit" disabled={loading}
+                    className="mt-1 bg-[#f0b90b] hover:bg-[#d4a300] text-black font-bold text-sm py-3 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
+                  >
+                    {loading ? 'Submitting…' : 'Submit Verification'}
+                  </button>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── CARD: SECURITY ── */}
+        <div className="bg-[#1e2329] border border-[#2b3139] rounded-xl overflow-hidden">
+          <div className="flex items-center gap-3 px-6 py-4 border-b border-[#2b3139]">
+            <IoLockClosedOutline size={18} className="text-[#f0b90b]" />
+            <h2 className="text-sm font-bold uppercase tracking-wide text-[#eaecef]">Security</h2>
+          </div>
+
+          <div className="p-6">
+            {pwError && (
+              <div className="mb-5 px-4 py-3 bg-[#f6465d]/10 border border-[#f6465d]/20 rounded-lg text-[#f6465d] text-sm font-medium">{pwError}</div>
+            )}
+            {pwSuccess && (
+              <div className="mb-5 px-4 py-3 bg-[#0ecb81]/10 border border-[#0ecb81]/20 rounded-lg text-[#0ecb81] text-sm font-semibold">
+                Password changed successfully.
+              </div>
+            )}
+
+            <form onSubmit={handleChangePassword} className="flex flex-col gap-4">
+              <div>
+                <label className={labelCls}>Current Password</label>
+                <input type="password" required value={pwCurrent} onChange={e => setPwCurrent(e.target.value)}
+                  placeholder="Enter current password" className={inputCls} />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className={labelCls}>New Password</label>
+                  <input type="password" required value={pwNew} onChange={e => setPwNew(e.target.value)}
+                    placeholder="Min 8 chars, uppercase, number, symbol" className={inputCls} />
                 </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="mt-2 bg-[#00D68F] text-black font-bold text-lg py-4 rounded-xl hover:bg-[#00bd7e] disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-[0_0_20px_-5px_rgba(0,214,143,0.3)]"
-                >
-                  {loading ? 'Submitting…' : 'Submit for Verification'}
-                </button>
-              </form>
-            </>
-          )}
-
-        </div>
-      </div>
-
-      {/* ── Change Password ── */}
-      <div className="w-full max-w-3xl mt-6 bg-[#181a20] rounded-2xl border border-white/[0.08] shadow-2xl overflow-hidden">
-        <div className="p-6 md:p-8">
-          <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
-            <IoLockClosedOutline className="text-[#00D68F]" />
-            Change Password
-          </h2>
-
-          {pwError && (
-            <div className="mb-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">{pwError}</div>
-          )}
-          {pwSuccess && (
-            <div className="mb-4 px-4 py-3 bg-[#00D68F]/10 border border-[#00D68F]/20 rounded-lg text-[#00D68F] text-sm font-semibold">
-              Password changed successfully.
-            </div>
-          )}
-
-          <form onSubmit={handleChangePassword} className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <label className="text-sm font-semibold text-gray-300">Current Password</label>
-              <input
-                type="password"
-                required
-                value={pwCurrent}
-                onChange={e => setPwCurrent(e.target.value)}
-                placeholder="Enter current password"
-                className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
-              />
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col gap-2">
-                <label className="text-sm font-semibold text-gray-300">New Password</label>
-                <input
-                  type="password"
-                  required
-                  value={pwNew}
-                  onChange={e => setPwNew(e.target.value)}
-                  placeholder="Min 8 chars, uppercase, number, symbol"
-                  className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
-                />
+                <div>
+                  <label className={labelCls}>Confirm New Password</label>
+                  <input type="password" required value={pwConfirm} onChange={e => setPwConfirm(e.target.value)}
+                    placeholder="Repeat new password" className={inputCls} />
+                </div>
               </div>
-              <div className="flex flex-col gap-2">
-                <label className="text-sm font-semibold text-gray-300">Confirm New Password</label>
-                <input
-                  type="password"
-                  required
-                  value={pwConfirm}
-                  onChange={e => setPwConfirm(e.target.value)}
-                  placeholder="Repeat new password"
-                  className="bg-[#0b0c0e] border border-white/[0.1] rounded-lg p-3 text-white focus:outline-none focus:border-[#00D68F] transition-colors"
-                />
-              </div>
-            </div>
-            <button
-              type="submit"
-              disabled={pwLoading}
-              className="mt-2 bg-[#00D68F] text-black font-bold text-base py-3 rounded-xl hover:bg-[#00bd7e] disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
-            >
-              {pwLoading ? 'Updating…' : 'Update Password'}
-            </button>
-          </form>
+              <button
+                type="submit" disabled={pwLoading}
+                className="mt-1 w-full sm:w-auto sm:self-start bg-[#2b3139] hover:bg-[#363c45] border border-[#363c45] text-[#eaecef] font-bold text-sm px-8 py-3 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors active:scale-[0.98]"
+              >
+                {pwLoading ? 'Updating…' : 'Update Password'}
+              </button>
+            </form>
+          </div>
         </div>
-      </div>
 
+      </div>
     </div>
   );
 };

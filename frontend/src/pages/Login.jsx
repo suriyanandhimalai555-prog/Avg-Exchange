@@ -96,9 +96,9 @@ const Login = () => {
                 />
                 <span className="group-hover:text-white transition-colors">Remember me</span>
               </label>
-              <span className="text-sm text-[#848e9c] cursor-not-allowed" title="Coming soon">
+              <Link to="/forgot-password" className="text-sm text-[#00D68F] hover:text-[#00ba7c] font-semibold transition-colors">
                 Forgot Password?
-              </span>
+              </Link>
             </div>
 
             <button disabled={isLoading} className={s.submitBtn}>
