@@ -82,10 +82,17 @@ module.exports = (io) => {
   const router = express.Router();
 
   // Broadcasts the full current order book depth for a pair to every connected client.
-  // Called after every state change: place, cancel, fill.
+  // Debounced per pair — when the bot places/cancels many orders in a burst, all
+  // the intermediate states are collapsed into one emit 300 ms after the last change.
+  // Real user orders (single events) still feel instant since 300 ms is imperceptible.
+  const _depthTimers = {};
   const emitDepth = (pair) => {
-    const depth = engine.getDepth(pair);
-    io.emit('depth_update', { pair, asks: depth.asks, bids: depth.bids });
+    if (_depthTimers[pair]) clearTimeout(_depthTimers[pair]);
+    _depthTimers[pair] = setTimeout(() => {
+      delete _depthTimers[pair];
+      const depth = engine.getDepth(pair);
+      io.emit('depth_update', { pair, asks: depth.asks, bids: depth.bids });
+    }, 300);
   };
 
   // ── GET /api/trade/orderbook?pair=BTC/USDT ───────────────
@@ -240,7 +247,9 @@ module.exports = (io) => {
       }));
     } catch (err) {
       await db.query(`UPDATE orders SET status = 'cancelled' WHERE id = $1`, [dbOrder.id]).catch(() => {});
-      await db.unlockFunds(userId, lockCurrency, lockAmount).catch(() => {});
+      await db.unlockFunds(userId, lockCurrency, lockAmount).catch((unlockErr) => {
+        console.error(`[CRITICAL] Failed to unlock funds for user ${userId} after engine error — manual fix required. currency=${lockCurrency} amount=${lockAmount}`, unlockErr.message);
+      });
       return next(err);
     }
 

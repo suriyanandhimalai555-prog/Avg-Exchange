@@ -107,7 +107,7 @@ app.use(errorHandler);
 
 // ── Static coin price oscillator ─────────────────────────
 // Simulates realistic price movement within the admin-set range.
-// Runs every 3 seconds — small random walk (±0.4% per tick), clamped to [min, max].
+// Runs every 10 seconds — small random walk (±0.4% per tick), clamped to [min, max].
 function startStaticCoinOscillator() {
   setInterval(async () => {
     try {
@@ -142,7 +142,7 @@ function startStaticCoinOscillator() {
         [next.toFixed(10), rows[0].symbol, snapshot24hOld]
       );
     } catch (_) {}
-  }, 20_000);
+  }, 10_000);
 }
 
 // ── Startup helpers ───────────────────────────────────────────
@@ -267,7 +267,12 @@ const shutdown = async (signal) => {
             `DELETE FROM orders
               WHERE user_id  = $1
                 AND status   IN ('cancelled', 'filled')
-                AND updated_at < NOW() - INTERVAL '24 hours'`,
+                AND updated_at < NOW() - INTERVAL '24 hours'
+                AND id NOT IN (
+                  SELECT buy_order_id  FROM trades WHERE buy_order_id  IS NOT NULL
+                  UNION
+                  SELECT sell_order_id FROM trades WHERE sell_order_id IS NOT NULL
+                )`,
             [botId]
           );
           if (rowCount > 0) {

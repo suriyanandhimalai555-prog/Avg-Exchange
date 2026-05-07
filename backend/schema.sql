@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS payment_invoices (
   amount      NUMERIC(28,10) NOT NULL,
   status      VARCHAR(30)   NOT NULL DEFAULT 'pending',  -- pending|Paid|Expired|Error
   payment_url TEXT,
+  payment_type VARCHAR(20)  NOT NULL DEFAULT 'invoice',  -- 'invoice' or 'whitelabel'
   credited    BOOLEAN       NOT NULL DEFAULT FALSE,  -- guard against double-credit
   created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -152,8 +153,10 @@ CREATE TABLE IF NOT EXISTS static_coin_config (
   min_price     NUMERIC(28,10) NOT NULL,
   max_price     NUMERIC(28,10) NOT NULL,
   current_price NUMERIC(28,10) NOT NULL,          -- bot mid price, set by admin
-  enabled       BOOLEAN        NOT NULL DEFAULT TRUE,
-  updated_at    TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+  enabled            BOOLEAN        NOT NULL DEFAULT TRUE,
+  price_24h_ago      NUMERIC(28,10),
+  price_24h_updated_at TIMESTAMPTZ,
+  updated_at         TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
 -- ── password_reset_tokens ─────────────────────────────────────

@@ -65,9 +65,9 @@ const buildStaticEntry = (staticCoin) => {
   const ago      = parseFloat(staticCoin.price_24h_ago) || current;
   const change24h = ago > 0 ? ((current - ago) / ago) * 100 : 0;
   return {
-    id:                          staticCoin.symbol.toLowerCase(),
-    symbol:                      staticCoin.symbol.toLowerCase(),
-    name:                        staticCoin.symbol,
+    id:                          staticCoin.symbol.toUpperCase(),
+    symbol:                      staticCoin.symbol.toUpperCase(),
+    name:                        staticCoin.symbol.toUpperCase(),
     image:                       '/avg-coin.svg',
     current_price:               current,
     price_change_percentage_24h: change24h,
