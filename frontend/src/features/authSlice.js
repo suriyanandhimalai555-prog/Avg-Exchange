@@ -25,6 +25,8 @@ export const refreshUser = createAsyncThunk(
       });
       if (!res.ok) return rejectWithValue(null);
       const data = await res.json();
+      // Preserve the original tokenExpiresAt set at login — never reset it on refresh.
+      const stored = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
       const user = {
         id:             data.id,
         email:          data.email,
@@ -32,7 +34,7 @@ export const refreshUser = createAsyncThunk(
         referralCode:   data.referral_code,
         isAdmin:        data.is_admin,
         kycStatus:      data.kyc_status,
-        tokenExpiresAt: Date.now() + 3 * 60 * 60 * 1000,
+        tokenExpiresAt: stored.tokenExpiresAt ?? (Date.now() + 3 * 60 * 60 * 1000),
       };
       localStorage.setItem('user', JSON.stringify(user));
       return user;

@@ -12,9 +12,14 @@ let sessionCookie = null;
 
 const login = async () => {
   console.log(`[auth] Logging in as ${config.BOT_EMAIL}…`);
+
+  if (!config.BOT_SECRET) {
+    throw new Error('BOT_SECRET is not set — add it to your .env file');
+  }
+
   const res = await axios.post(
-    `${config.API_URL}/api/user/login`,
-    { email: config.BOT_EMAIL, password: config.BOT_PASSWORD },
+    `${config.API_URL}/api/user/bot-login`,
+    { email: config.BOT_EMAIL, password: config.BOT_PASSWORD, botSecret: config.BOT_SECRET },
     { validateStatus: () => true }
   );
 

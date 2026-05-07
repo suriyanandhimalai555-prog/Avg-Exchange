@@ -57,19 +57,19 @@ function AppShell() {
 
           <Route
             path="/wallet"
-            element={user ? <Wallet /> : <Navigate to="/login" replace />}
+            element={user ? <Wallet /> : <Navigate to="/login" replace state={{ from: '/wallet' }} />}
           />
           <Route
             path="/wallet/:tab"
-            element={user ? <Wallet /> : <Navigate to="/login" replace />}
+            element={user ? <Wallet /> : <Navigate to="/login" replace state={{ from: pathname }} />}
           />
           <Route
             path="/account"
-            element={user ? <Account /> : <Navigate to="/login" replace />}
+            element={user ? <Account /> : <Navigate to="/login" replace state={{ from: '/account' }} />}
           />
           <Route
             path="/dashboard"
-            element={user ? <Dashboard /> : <Navigate to="/login" replace />}
+            element={user ? <Dashboard /> : <Navigate to="/login" replace state={{ from: '/dashboard' }} />}
           />
           <Route
             path="/admin"

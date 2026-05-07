@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { useDispatch, useSelector } from 'react-redux'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { sendLoginOtp, verifyLoginOtp, clearOtpStep } from '../features/authSlice'
 import { authStyles as s } from '../components/AuthStyles'
 import BitcoinVideo from '../assets/Bitcoin_spinning.mp4'
@@ -60,12 +60,23 @@ const Login = () => {
   const [resendCooldown, setResendCooldown] = useState(0)
 
   const dispatch   = useDispatch()
+  const navigate   = useNavigate()
+  const location   = useLocation()
   const isLoading  = useSelector((state) => state.auth.loading)
   const error      = useSelector((state) => state.auth.error)
   const otpStep    = useSelector((state) => state.auth.otpStep)
   const otpEmail   = useSelector((state) => state.auth.otpEmail)
+  const user       = useSelector((state) => state.auth.user)
 
   const cooldownRef = useRef(null)
+
+  // Redirect after successful login — back to where the user came from
+  useEffect(() => {
+    if (user) {
+      const from = location.state?.from || '/'
+      navigate(from, { replace: true })
+    }
+  }, [user, navigate, location.state])
 
   // Start 60s resend cooldown when OTP step first activates
   useEffect(() => {
@@ -97,11 +108,11 @@ const Login = () => {
   }
 
   const handleResend = async () => {
-    const result = await dispatch(sendLoginOtp({ email, password }))
-    if (result.type === 'auth/sendLoginOtp/fulfilled') {
+    try {
+      await dispatch(sendLoginOtp({ email, password })).unwrap()
       setOtp(['', '', '', '', '', ''])
       startCooldown()
-    }
+    } catch (_) { /* error already shown via Redux state */ }
   }
 
   const handleBack = () => {

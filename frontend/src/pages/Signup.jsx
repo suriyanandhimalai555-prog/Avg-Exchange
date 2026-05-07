@@ -110,11 +110,11 @@ const Signup = () => {
   }
 
   const handleResend = async () => {
-    const result = await dispatch(sendSignupOtp({ name, email, password, referralCode }))
-    if (result.type === 'auth/sendSignupOtp/fulfilled') {
+    try {
+      await dispatch(sendSignupOtp({ name, email, password, referralCode })).unwrap()
       setOtp(['', '', '', '', '', ''])
       startCooldown()
-    }
+    } catch (_) { /* error already shown via Redux state */ }
   }
 
   const handleBack = () => {

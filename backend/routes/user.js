@@ -23,6 +23,35 @@ router.post('/login',              authLimiter, loginUser);
 router.post('/verify-login-otp',   authLimiter, verifyLoginOtp);
 router.post('/signup',             authLimiter, signupUser);
 router.post('/verify-signup-otp',  authLimiter, verifySignupOtp);
+
+// ── Bot / Service Account Login ───────────────────────────────
+// Machine-to-machine: skips OTP. Requires BOT_SECRET env var on both sides.
+// Never expose this endpoint to the browser.
+router.post('/bot-login', async (req, res, next) => {
+  const { email, password, botSecret } = req.body;
+
+  if (!process.env.BOT_SECRET) {
+    return res.status(503).json({ error: 'Bot auth not configured on this server' });
+  }
+  if (!botSecret || botSecret !== process.env.BOT_SECRET) {
+    return res.status(401).json({ error: 'Invalid bot secret' });
+  }
+
+  try {
+    const result = await db.query('SELECT * FROM "User" WHERE email = $1', [email]);
+    const user = result.rows[0];
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const jwt = require('jsonwebtoken');
+    const token = jwt.sign({ id: user.id }, process.env.SECRET, { expiresIn: '30d' });
+    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.status(200).json({ id: user.id, email: user.email, token });
+  } catch (err) {
+    next(err);
+  }
+});
 router.post('/logout', (req, res) => {
   res.clearCookie('token', { httpOnly: true, secure: true, sameSite: 'none' });
   res.json({ success: true });

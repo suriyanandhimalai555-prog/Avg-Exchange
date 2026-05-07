@@ -15,6 +15,7 @@ module.exports = {
   API_URL:            process.env.API_URL          || 'http://localhost:4000',
   BOT_EMAIL:          required('BOT_EMAIL'),
   BOT_PASSWORD:       required('BOT_PASSWORD'),
+  BOT_SECRET:         required('BOT_SECRET'),
   BOT_PAIRS,
   BOT_PAIR:           BOT_PAIRS[0],                // kept for anything that still reads it
   BOT_SPREAD_PCT:      parseFloat(process.env.BOT_SPREAD_PCT      || '0.3'),

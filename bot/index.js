@@ -54,6 +54,10 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error('[bot] Fatal error:', err.message);
+  console.error('[bot] Fatal error:', err?.message || err);
+  if (err?.response) {
+    console.error('[bot] Response status:', err.response.status);
+    console.error('[bot] Response body:',   JSON.stringify(err.response.data));
+  }
   process.exit(1);
 });
