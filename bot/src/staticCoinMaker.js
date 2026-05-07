@@ -44,7 +44,7 @@ class StaticCoinMaker {
     const maxPrice    = parseFloat(cfg.max_price);
     const midPrice    = parseFloat(cfg.current_price);
     const levels      = config.BOT_LEVELS;
-    const orderValue  = config.BOT_ORDER_VALUE_USD;
+    const orderValue  = config.BOT_STATIC_ORDER_VALUE_USD;
 
     // Initialise OrderManager for this pair on first run
     if (!this.orders || this.pair !== pair) {
@@ -71,8 +71,9 @@ class StaticCoinMaker {
       const buyPrice  = midPrice - (i + 1) * buyStep;
       const sellPrice = midPrice + (i + 1) * sellStep;
 
-      const buyQty  = orderValue / buyPrice;
-      const sellQty = orderValue / sellPrice;
+      // Randomise ±40% so every row in the order book has a different total
+      const buyQty  = (orderValue / buyPrice)  * (0.6 + Math.random() * 0.8);
+      const sellQty = (orderValue / sellPrice) * (0.6 + Math.random() * 0.8);
 
       if (buyPrice  > minPrice)  await this.orders.place('buy',  buyPrice,  buyQty);
       if (sellPrice < maxPrice)  await this.orders.place('sell', sellPrice, sellQty);

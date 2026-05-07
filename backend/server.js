@@ -249,6 +249,39 @@ const shutdown = async (signal) => {
     // Start static coin price oscillator
     startStaticCoinOscillator();
 
+    // ── Bot order cleanup — runs every 24 h ───────────────────────────────
+    // The market-maker bot cancels and re-places ~160 orders every 15 s.
+    // Without cleanup that's ~920k cancelled rows/day accumulating in the
+    // orders table, slowing recoverFromDB() and every orders query.
+    // This job deletes bot-owned cancelled/filled orders older than 24 h,
+    // keeping only the last day of history. Real user orders are untouched.
+    (async function scheduleBotOrderCleanup() {
+      const runCleanup = async () => {
+        const botEmail = process.env.BOT_EMAIL;
+        if (!botEmail) return;
+        try {
+          const userRes = await db.query('SELECT id FROM "User" WHERE email = $1', [botEmail]);
+          if (userRes.rows.length === 0) return;
+          const botId = userRes.rows[0].id;
+          const { rowCount } = await db.query(
+            `DELETE FROM orders
+              WHERE user_id  = $1
+                AND status   IN ('cancelled', 'filled')
+                AND updated_at < NOW() - INTERVAL '24 hours'`,
+            [botId]
+          );
+          if (rowCount > 0) {
+            console.log(`[cleanup] Deleted ${rowCount} old bot orders`);
+          }
+        } catch (err) {
+          console.error('[cleanup] Bot order cleanup failed:', err.message);
+        }
+      };
+
+      await runCleanup(); // run once immediately on startup
+      setInterval(runCleanup, 24 * 60 * 60 * 1000); // then every 24 h
+    })();
+
     // Broadcast recovered depth to any clients that connected during startup
     for (const pair of engine.getPairs()) {
       const depth = engine.getDepth(pair);
