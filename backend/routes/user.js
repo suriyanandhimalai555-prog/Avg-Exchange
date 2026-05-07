@@ -3,7 +3,7 @@ const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const validator = require('validator');
-const { loginUser, signupUser } = require('../controllers/userController');
+const { loginUser, signupUser, verifyLoginOtp, verifySignupOtp } = require('../controllers/userController');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../db');
 const email = require('../services/emailService');
@@ -19,8 +19,10 @@ const authLimiter = rateLimit({
 });
 
 // ── Auth ──────────────────────────────────────────────────────
-router.post('/login',  authLimiter, loginUser);
-router.post('/signup', authLimiter, signupUser);
+router.post('/login',              authLimiter, loginUser);
+router.post('/verify-login-otp',   authLimiter, verifyLoginOtp);
+router.post('/signup',             authLimiter, signupUser);
+router.post('/verify-signup-otp',  authLimiter, verifySignupOtp);
 router.post('/logout', (req, res) => {
   res.clearCookie('token', { httpOnly: true, secure: true, sameSite: 'none' });
   res.json({ success: true });

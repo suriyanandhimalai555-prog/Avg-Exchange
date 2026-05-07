@@ -119,7 +119,8 @@ const Account = () => {
 
   const copyReferral = () => {
     if (!user?.referral_code) return;
-    navigator.clipboard.writeText(user.referral_code);
+    const link = `${window.location.origin}/signup?ref=${user.referral_code}`;
+    navigator.clipboard.writeText(link);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -8,13 +8,12 @@ const savedUser = (() => {
   } catch { return null }
 })()
 
-// Silently re-fetches the user profile from the server using the existing cookie.
-// Fixes stale localStorage (e.g. missing `id` from old sessions).
 const getStoredToken = () => {
   try { return JSON.parse(localStorage.getItem('user') || '{}')?.token || null; }
   catch { return null; }
 };
 
+// Silently re-fetches the user profile using the existing cookie.
 export const refreshUser = createAsyncThunk(
   'auth/refreshUser',
   async (_, { rejectWithValue }) => {
@@ -24,15 +23,16 @@ export const refreshUser = createAsyncThunk(
         credentials: 'include',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-      if (!res.ok) return rejectWithValue(null); // not logged in — ignore silently
+      if (!res.ok) return rejectWithValue(null);
       const data = await res.json();
       const user = {
-        id:           data.id,
-        email:        data.email,
-        name:         data.name,
-        referralCode: data.referral_code,
-        isAdmin:      data.is_admin,
-        kycStatus:    data.kyc_status,
+        id:             data.id,
+        email:          data.email,
+        name:           data.name,
+        referralCode:   data.referral_code,
+        isAdmin:        data.is_admin,
+        kycStatus:      data.kyc_status,
+        tokenExpiresAt: Date.now() + 3 * 60 * 60 * 1000,
       };
       localStorage.setItem('user', JSON.stringify(user));
       return user;
@@ -42,47 +42,85 @@ export const refreshUser = createAsyncThunk(
   }
 );
 
-export const loginUser = createAsyncThunk(
-  'auth/loginUser',
-  // Accept rememberMe
-  async ({ email, password, rememberMe }, { rejectWithValue }) => {
+// ── Login — Step 1: validate credentials, send OTP to email ─────
+export const sendLoginOtp = createAsyncThunk(
+  'auth/sendLoginOtp',
+  async ({ email, password }, { rejectWithValue }) => {
     try {
       const response = await fetch(`${API_URL}/api/user/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Pass rememberMe to backend
-        body: JSON.stringify({ email, password, rememberMe }),
-        credentials: 'include' 
+        body: JSON.stringify({ email, password }),
+        credentials: 'include',
       });
       const data = await response.json();
       if (!response.ok) return rejectWithValue(data.error);
-      
-      localStorage.setItem('user', JSON.stringify(data));
-      return data; 
-    } catch (err) {
+      return data; // { otpSent: true, email }
+    } catch {
       return rejectWithValue('Network error');
     }
   }
 );
 
-export const signupUser = createAsyncThunk(
-  'auth/signupUser',
-  // Accept name
+// ── Login — Step 2: verify OTP, receive session token ───────────
+export const verifyLoginOtp = createAsyncThunk(
+  'auth/verifyLoginOtp',
+  async ({ email, code }, { rejectWithValue }) => {
+    try {
+      const response = await fetch(`${API_URL}/api/user/verify-login-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) return rejectWithValue(data.error);
+      const user = { ...data, tokenExpiresAt: Date.now() + 3 * 60 * 60 * 1000 };
+      localStorage.setItem('user', JSON.stringify(user));
+      return user;
+    } catch {
+      return rejectWithValue('Network error');
+    }
+  }
+);
+
+// ── Signup — Step 1: validate, send OTP to email ────────────────
+export const sendSignupOtp = createAsyncThunk(
+  'auth/sendSignupOtp',
   async ({ name, email, password, referralCode }, { rejectWithValue }) => {
     try {
       const response = await fetch(`${API_URL}/api/user/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Pass name to backend
         body: JSON.stringify({ name, email, password, referralCode }),
-        credentials: 'include'
+        credentials: 'include',
       });
       const data = await response.json();
       if (!response.ok) return rejectWithValue(data.error);
-      
-      localStorage.setItem('user', JSON.stringify(data));
-      return data; 
-    } catch (err) {
+      return data; // { otpSent: true, email }
+    } catch {
+      return rejectWithValue('Network error');
+    }
+  }
+);
+
+// ── Signup — Step 2: verify OTP, create account, receive token ──
+export const verifySignupOtp = createAsyncThunk(
+  'auth/verifySignupOtp',
+  async ({ email, code }, { rejectWithValue }) => {
+    try {
+      const response = await fetch(`${API_URL}/api/user/verify-signup-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code }),
+        credentials: 'include',
+      });
+      const data = await response.json();
+      if (!response.ok) return rejectWithValue(data.error);
+      const user = { ...data, tokenExpiresAt: Date.now() + 3 * 60 * 60 * 1000 };
+      localStorage.setItem('user', JSON.stringify(user));
+      return user;
+    } catch {
       return rejectWithValue('Network error');
     }
   }
@@ -90,7 +128,7 @@ export const signupUser = createAsyncThunk(
 
 export const logoutUser = createAsyncThunk(
   'auth/logoutUser',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const token = getStoredToken();
       await fetch(`${API_URL}/api/user/logout`, {
@@ -98,9 +136,7 @@ export const logoutUser = createAsyncThunk(
         credentials: 'include',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
-    } catch (_) {
-      // Ignore network errors — still clear local state
-    }
+    } catch (_) {}
     localStorage.removeItem('user');
   }
 );
@@ -108,54 +144,89 @@ export const logoutUser = createAsyncThunk(
 const authSlice = createSlice({
   name: 'auth',
   initialState: {
-    user: savedUser,
-    loading: false,
-    error: null
+    user:     savedUser,
+    loading:  false,
+    error:    null,
+    otpStep:  null,   // null | 'login' | 'signup'
+    otpEmail: null,
   },
   reducers: {
     logout(state) {
-      state.user = null;
-      state.error = null;
+      state.user     = null;
+      state.error    = null;
+      state.otpStep  = null;
+      state.otpEmail = null;
       localStorage.removeItem('user');
     },
     clearError(state) {
       state.error = null;
-    }
+    },
+    clearOtpStep(state) {
+      state.otpStep  = null;
+      state.otpEmail = null;
+      state.error    = null;
+    },
+    sessionExpired(state) {
+      state.user     = null;
+      state.error    = null;
+      state.otpStep  = null;
+      state.otpEmail = null;
+      localStorage.removeItem('user');
+    },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(loginUser.pending, (state) => { state.loading = true; state.error = null; })
-      .addCase(loginUser.fulfilled, (state, action) => {
-        state.loading = false;
-        state.user = action.payload;
+      // sendLoginOtp
+      .addCase(sendLoginOtp.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(sendLoginOtp.fulfilled, (state, action) => {
+        state.loading  = false;
+        state.otpStep  = 'login';
+        state.otpEmail = action.payload.email;
       })
-      .addCase(loginUser.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload;
+      .addCase(sendLoginOtp.rejected,  (state, action) => { state.loading = false; state.error = action.payload; })
+      // verifyLoginOtp
+      .addCase(verifyLoginOtp.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(verifyLoginOtp.fulfilled, (state, action) => {
+        state.loading  = false;
+        state.user     = action.payload;
+        state.otpStep  = null;
+        state.otpEmail = null;
       })
-      .addCase(signupUser.pending, (state) => { state.loading = true; state.error = null; })
-      .addCase(signupUser.fulfilled, (state, action) => {
-        state.loading = false;
-        state.user = action.payload;
+      .addCase(verifyLoginOtp.rejected,  (state, action) => { state.loading = false; state.error = action.payload; })
+      // sendSignupOtp
+      .addCase(sendSignupOtp.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(sendSignupOtp.fulfilled, (state, action) => {
+        state.loading  = false;
+        state.otpStep  = 'signup';
+        state.otpEmail = action.payload.email;
       })
-      .addCase(signupUser.rejected, (state, action) => {
-        state.loading = false;
-        state.error = action.payload;
+      .addCase(sendSignupOtp.rejected,  (state, action) => { state.loading = false; state.error = action.payload; })
+      // verifySignupOtp
+      .addCase(verifySignupOtp.pending,   (state) => { state.loading = true;  state.error = null; })
+      .addCase(verifySignupOtp.fulfilled, (state, action) => {
+        state.loading  = false;
+        state.user     = action.payload;
+        state.otpStep  = null;
+        state.otpEmail = null;
       })
+      .addCase(verifySignupOtp.rejected,  (state, action) => { state.loading = false; state.error = action.payload; })
+      // logoutUser
       .addCase(logoutUser.fulfilled, (state) => {
-        state.user = null;
-        state.error = null;
+        state.user     = null;
+        state.error    = null;
+        state.otpStep  = null;
+        state.otpEmail = null;
       })
+      // refreshUser
       .addCase(refreshUser.fulfilled, (state, action) => {
         state.user = action.payload;
       })
       .addCase(refreshUser.rejected, (state) => {
-        // Cookie invalid/expired — clear stale local user
         state.user = null;
         localStorage.removeItem('user');
       });
   }
 })
 
-export const { logout, clearError } = authSlice.actions
+export const { logout, clearError, clearOtpStep, sessionExpired } = authSlice.actions
 export default authSlice.reducer

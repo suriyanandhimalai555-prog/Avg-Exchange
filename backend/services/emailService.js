@@ -216,9 +216,41 @@ const sendTradeNotification = (to, { price, quantity, executed_at }, role, pair)
   sendMail({ to, subject: `${action} ${parseFloat(quantity).toFixed(6)} ${base} @ $${parseFloat(price).toLocaleString()} — AvgExchange`, html });
 };
 
+/**
+ * OTP verification email for login and signup flows.
+ *
+ * @param {string} to          recipient email
+ * @param {string} code        6-digit OTP code
+ * @param {'login'|'signup'} purpose
+ */
+const sendOtpEmail = (to, code, purpose = 'login') => {
+  const title = purpose === 'signup' ? 'Verify Your Email' : 'Login Verification';
+  const description = purpose === 'signup'
+    ? 'Use this code to complete your AvgExchange account registration.'
+    : 'Use this code to complete your login to AvgExchange.';
+
+  const html = wrapLayout(title, `
+    <p style="color:${MUTED_COLOR};margin:0 0 16px;">
+      ${description}
+      It expires in <strong style="color:${TEXT_COLOR};">10 minutes</strong>.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      <div style="display:inline-block;background:${BG_COLOR};border:2px solid ${BRAND_COLOR};border-radius:8px;padding:16px 40px;letter-spacing:8px;font-size:32px;font-weight:800;color:${BRAND_COLOR};font-family:monospace;">
+        ${code}
+      </div>
+    </div>
+    <p style="color:${MUTED_COLOR};margin:16px 0 0;font-size:12px;">
+      If you did not request this, you can safely ignore this email.
+    </p>
+  `);
+
+  sendMail({ to, subject: `${code} — AvgExchange Verification Code`, html });
+};
+
 module.exports = {
   sendMail,
   sendMailSync,
   sendPasswordResetEmail,
   sendTradeNotification,
+  sendOtpEmail,
 };

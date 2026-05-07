@@ -2,7 +2,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { useEffect } from 'react';
-import { refreshUser } from './features/authSlice';
+import { refreshUser, sessionExpired } from './features/authSlice';
 
 import Home       from './pages/Home';
 import Login      from './pages/Login';
@@ -27,6 +27,22 @@ function AppShell() {
   const { pathname } = useLocation();
 
   useEffect(() => { dispatch(refreshUser()); }, [dispatch]);
+
+  // Check session expiry every minute. When tokenExpiresAt passes, clear
+  // the user state so protected routes redirect to /login automatically.
+  useEffect(() => {
+    const check = () => {
+      try {
+        const stored = JSON.parse(localStorage.getItem('user') || '{}');
+        if (stored?.tokenExpiresAt && Date.now() >= stored.tokenExpiresAt) {
+          dispatch(sessionExpired());
+        }
+      } catch {}
+    };
+    check();
+    const interval = setInterval(check, 60_000);
+    return () => clearInterval(interval);
+  }, [dispatch]);
 
   const showFooter = FOOTER_PAGES.has(pathname);
 

@@ -88,7 +88,8 @@ const Navbar = () => {
 
   const copyToClipboard = () => {
     if (user?.referralCode) {
-      navigator.clipboard.writeText(user.referralCode);
+      const link = `${window.location.origin}/signup?ref=${user.referralCode}`;
+      navigator.clipboard.writeText(link);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
