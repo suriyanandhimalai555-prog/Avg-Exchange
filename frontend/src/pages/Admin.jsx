@@ -13,8 +13,7 @@ import API_URL from '../config/api';
 import {
   LuUsers, LuPackage, LuRepeat2, LuShieldCheck,
   LuCircleCheck, LuCircleX, LuTriangleAlert,
-  LuFileText, LuShield, LuShieldOff, LuCirclePlus,
-  LuChevronLeft, LuChevronRight,
+  LuFileText, LuChevronLeft, LuChevronRight, LuArrowRight,
 } from 'react-icons/lu';
 
 const TABS = ['Overview', 'KYC', 'Users', 'Orders', 'Static Coin'];
@@ -330,67 +329,10 @@ const KycTab = memo(() => {
 KycTab.displayName = 'KycTab';
 
 // ── USERS TAB ────────────────────────────────────────────────
-const AddBalanceModal = ({ target, onClose, onSuccess }) => {
-  const [currency, setCurrency] = useState('USDT');
-  const [amount,   setAmount]   = useState('');
-  const [loading,  setLoading]  = useState(false);
-  const [err,      setErr]      = useState('');
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr('');
-    setLoading(true);
-    try {
-      await axios.post(`${API_URL}/api/admin/users/${target.id}/add-balance`, { currency, amount }, { withCredentials: true });
-      onSuccess();
-      onClose();
-    } catch (e) {
-      setErr(e.response?.data?.error || 'Failed to add balance');
-    } finally { setLoading(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-      <div className="bg-[#1e2329] border border-[#2b3139] rounded-xl p-6 w-full max-w-sm flex flex-col gap-4">
-        <h3 className="font-bold text-[#eaecef]">Add Balance — {target.name || target.email}</h3>
-        {err && <p className="text-[#f6465d] text-sm">{err}</p>}
-        <form onSubmit={submit} className="flex flex-col gap-3">
-          <select
-            value={currency}
-            onChange={e => setCurrency(e.target.value)}
-            className="bg-[#2b3139] border border-[#363c45] rounded-lg px-3 py-2 text-sm text-[#eaecef] outline-none focus:border-[#f0b90b]"
-          >
-            {['USDT','BTC','ETH','BNB','SOL'].map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <input
-            type="number" min="0" step="any" required
-            placeholder="Amount"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            className="bg-[#2b3139] border border-[#363c45] rounded-lg px-3 py-2 text-sm text-[#eaecef] outline-none focus:border-[#f0b90b]"
-          />
-          <div className="flex gap-2 justify-end">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg bg-[#2b3139] text-[#eaecef] text-sm font-semibold hover:bg-[#363c45] transition-colors">Cancel</button>
-            <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-[#f0b90b] hover:bg-[#d4a300] text-black text-sm font-bold transition-colors disabled:opacity-50">
-              {loading ? 'Adding…' : 'Add'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-};
-
 const UsersTab = memo(() => {
-  const [users, setUsers]             = useState([]);
-  const [error, setError]             = useState(false);
-  const [feedback, setFeedback]       = useState(null);
-  const [balanceTarget, setBalanceTarget] = useState(null);
-
-  const flash = (msg, type = 'success') => {
-    setFeedback({ msg, type });
-    setTimeout(() => setFeedback(null), 3500);
-  };
+  const [users, setUsers] = useState([]);
+  const [error, setError] = useState(false);
+  const navigate = useNavigate();
 
   const fetchUsers = useCallback(async () => {
     setError(false);
@@ -401,100 +343,58 @@ const UsersTab = memo(() => {
   }, []);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
-  useAdminSocket(fetchUsers, 8000); // users change rarely — longer throttle
-
-  const handleToggleAdmin = async (u) => {
-    if (!window.confirm(`${u.is_admin ? 'Remove admin from' : 'Make admin'}: ${u.name || u.email}?`)) return;
-    try {
-      await axios.patch(`${API_URL}/api/admin/users/${u.id}/toggle-admin`, {}, { withCredentials: true });
-      flash(`Admin status updated for ${u.name || u.email}`);
-      fetchUsers();
-    } catch (e) { flash(e.response?.data?.error || 'Failed', 'error'); }
-  };
+  useAdminSocket(fetchUsers, 8000);
 
   return (
-    <>
-      {feedback && (
-        <div className={`px-4 py-2.5 rounded-lg text-sm font-semibold border ${feedback.type === 'error' ? 'bg-[#f6465d]/10 text-[#f6465d] border-[#f6465d]/20' : 'bg-[#0ecb81]/10 text-[#0ecb81] border-[#0ecb81]/20'}`}>
-          {feedback.msg}
-        </div>
-      )}
-
-      {balanceTarget && (
-        <AddBalanceModal
-          target={balanceTarget}
-          onClose={() => setBalanceTarget(null)}
-          onSuccess={() => { flash(`Balance added for ${balanceTarget.name || balanceTarget.email}`); fetchUsers(); }}
-        />
-      )}
-
-      <div className="overflow-x-auto rounded-xl border border-[#2b3139]">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-[#1e2329] text-[#848e9c] text-[11px] uppercase tracking-wide">
-              <th className="px-4 py-3 text-left">User</th>
-              <th className="px-4 py-3 text-left">Email</th>
-              <th className="px-4 py-3 text-left">KYC</th>
-              <th className="px-4 py-3 text-left">USDT Balance</th>
-              <th className="px-4 py-3 text-left">Role</th>
-              <th className="px-4 py-3 text-left">Joined</th>
-              <th className="px-4 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {error
-              ? <ErrorRow cols={7} />
-              : users.length === 0
-                ? <EmptyRow cols={7} msg="No users found" />
-                : users.map(u => (
-                    <tr key={u.id} className="border-t border-[#2b3139] hover:bg-[#1e2329]/50">
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2.5">
-                          <Avatar name={u.name} email={u.email} size={8} />
-                          <div>
-                            <div className="text-[#eaecef] font-semibold text-xs">{u.name || '—'}</div>
-                            <div className="text-[#848e9c] text-[10px] font-mono">#{u.id}</div>
-                          </div>
+    <div className="overflow-x-auto rounded-xl border border-[#2b3139]">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-[#1e2329] text-[#848e9c] text-[11px] uppercase tracking-wide">
+            <th className="px-4 py-3 text-left">User</th>
+            <th className="px-4 py-3 text-left">Email</th>
+            <th className="px-4 py-3 text-left">KYC</th>
+            <th className="px-4 py-3 text-left">Role</th>
+            <th className="px-4 py-3 text-left">Joined</th>
+            <th className="px-4 py-3 text-right">View</th>
+          </tr>
+        </thead>
+        <tbody>
+          {error
+            ? <ErrorRow cols={6} />
+            : users.length === 0
+              ? <EmptyRow cols={6} msg="No users found" />
+              : users.map(u => (
+                  <tr
+                    key={u.id}
+                    onClick={() => navigate(`/admin/users/${u.id}`)}
+                    className="border-t border-[#2b3139] hover:bg-[#1e2329]/70 cursor-pointer"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <Avatar name={u.name} email={u.email} size={8} />
+                        <div>
+                          <div className="text-[#eaecef] font-semibold text-xs">{u.name || '—'}</div>
+                          <div className="text-[#848e9c] text-[10px] font-mono">#{u.id}</div>
                         </div>
-                      </td>
-                      <td className="px-4 py-3 text-[#848e9c] text-xs">{u.email}</td>
-                      <td className="px-4 py-3"><Badge status={u.kyc_status || 'none'} /></td>
-                      <td className="px-4 py-3 text-[#eaecef] font-mono text-xs">${parseFloat(u.total_balance_raw || 0).toFixed(2)}</td>
-                      <td className="px-4 py-3">
-                        {u.is_admin
-                          ? <span className="text-[#f0b90b] font-bold text-xs">Admin</span>
-                          : <span className="text-[#848e9c] text-xs">User</span>}
-                      </td>
-                      <td className="px-4 py-3 text-[#848e9c] text-xs">{fmtDate(u.created_at)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1.5 justify-end">
-                          <button
-                            onClick={() => setBalanceTarget(u)}
-                            title="Add balance"
-                            className="p-1.5 rounded-lg bg-[#0ecb81]/10 hover:bg-[#0ecb81]/20 text-[#0ecb81] border border-[#0ecb81]/20 transition-colors"
-                          >
-                            <LuCirclePlus size={13} />
-                          </button>
-                          <button
-                            onClick={() => handleToggleAdmin(u)}
-                            title={u.is_admin ? 'Remove admin' : 'Make admin'}
-                            className={`p-1.5 rounded-lg border transition-colors ${
-                              u.is_admin
-                                ? 'bg-[#f6465d]/10 hover:bg-[#f6465d]/20 text-[#f6465d] border-[#f6465d]/20'
-                                : 'bg-[#f0b90b]/10 hover:bg-[#f0b90b]/20 text-[#f0b90b] border-[#f0b90b]/20'
-                            }`}
-                          >
-                            {u.is_admin ? <LuShieldOff size={13} /> : <LuShield size={13} />}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-            }
-          </tbody>
-        </table>
-      </div>
-    </>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-[#848e9c] text-xs">{u.email}</td>
+                    <td className="px-4 py-3"><Badge status={u.kyc_status || 'none'} /></td>
+                    <td className="px-4 py-3">
+                      {u.is_admin
+                        ? <span className="text-[#f0b90b] font-bold text-xs">Admin</span>
+                        : <span className="text-[#848e9c] text-xs">User</span>}
+                    </td>
+                    <td className="px-4 py-3 text-[#848e9c] text-xs">{fmtDate(u.created_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <LuArrowRight size={14} className="text-[#848e9c] group-hover:text-[#eaecef] ml-auto" />
+                    </td>
+                  </tr>
+                ))
+          }
+        </tbody>
+      </table>
+    </div>
   );
 });
 UsersTab.displayName = 'UsersTab';

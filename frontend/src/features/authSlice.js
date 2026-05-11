@@ -35,6 +35,7 @@ export const refreshUser = createAsyncThunk(
         isAdmin:        data.is_admin,
         kycStatus:      data.kyc_status,
         tokenExpiresAt: stored.tokenExpiresAt ?? (Date.now() + 3 * 60 * 60 * 1000),
+        token:          stored.token ?? null,  // preserve JWT for Bearer auth on mobile (cookies may be blocked)
       };
       localStorage.setItem('user', JSON.stringify(user));
       return user;

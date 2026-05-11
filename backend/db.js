@@ -238,4 +238,4 @@ const settleFill = async (client, {
   return rows[0];
 };
 
-module.exports = { query, getClient, lockFunds, unlockFunds, settleFill };
+module.exports = { pool, query, getClient, lockFunds, unlockFunds, settleFill };

@@ -12,8 +12,9 @@ import Trade      from './pages/Trade';
 import Account    from './pages/Account';
 import Wallet     from './pages/Wallet';
 import Dashboard  from './pages/Dashboard';
-import Admin      from './pages/Admin';
-import ForgotPassword from './pages/ForgotPassword';
+import Admin           from './pages/Admin';
+import AdminUserDetail from './pages/AdminUserDetail';
+import ForgotPassword  from './pages/ForgotPassword';
 import Navbar     from './components/Navbar';
 import Footer     from './components/Footer';
 import ScrollToTop from './components/ScrollToTop';
@@ -74,6 +75,10 @@ function AppShell() {
           <Route
             path="/admin"
             element={user?.isAdmin ? <Admin /> : <Navigate to="/" replace />}
+          />
+          <Route
+            path="/admin/users/:userId"
+            element={user?.isAdmin ? <AdminUserDetail /> : <Navigate to="/" replace />}
           />
           <Route
             path="/admin/:tab"

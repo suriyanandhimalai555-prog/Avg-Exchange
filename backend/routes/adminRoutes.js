@@ -34,10 +34,14 @@ router.get('/users', async (req, res, next) => {
     const { rows } = await db.query(`
       SELECT u.id, u.name, u.email, u.is_admin, u.created_at,
              k.status AS kyc_status,
-             COALESCE(SUM(b.available_balance + b.locked_balance), 0) AS total_balance_raw
+             COALESCE(
+               jsonb_object_agg(b.currency, (b.available_balance + b.locked_balance)::numeric)
+               FILTER (WHERE b.currency IS NOT NULL),
+               '{}'::jsonb
+             ) AS balances
         FROM "User" u
         LEFT JOIN kyc_submissions k ON k.user_id = u.id
-        LEFT JOIN balances b ON b.user_id = u.id AND b.currency = 'USDT'
+        LEFT JOIN balances b ON b.user_id = u.id
        GROUP BY u.id, u.name, u.email, u.is_admin, u.created_at, k.status
        ORDER BY u.created_at DESC
        LIMIT 200
@@ -92,6 +96,57 @@ router.post('/kyc/:userId/reject', async (req, res, next) => {
       [userId, note || 'Rejected by admin']
     );
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/users/:userId — full user detail
+router.get('/users/:userId', async (req, res, next) => {
+  const userId = parseInt(req.params.userId);
+  if (!userId) return res.status(400).json({ error: 'Invalid userId' });
+  try {
+    const [userRes, balancesRes, ordersRes, tradesRes] = await Promise.all([
+      db.query(`
+        SELECT u.id, u.name, u.email, u.is_admin, u.created_at, u.referral_code,
+               k.status AS kyc_status, k.full_name AS kyc_full_name,
+               k.document_type, k.document_number,
+               k.submitted_at AS kyc_submitted_at,
+               k.reviewed_at  AS kyc_reviewed_at,
+               k.reviewer_note
+          FROM "User" u
+          LEFT JOIN kyc_submissions k ON k.user_id = u.id
+         WHERE u.id = $1
+      `, [userId]),
+      db.query(`
+        SELECT currency,
+               available_balance::numeric AS available,
+               locked_balance::numeric    AS locked
+          FROM balances
+         WHERE user_id = $1
+         ORDER BY currency
+      `, [userId]),
+      db.query(`
+        SELECT id, pair, side, type, price, quantity, remaining_quantity, status, created_at
+          FROM orders
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT 20
+      `, [userId]),
+      db.query(`
+        SELECT id, pair, price, quantity, executed_at,
+               CASE WHEN buyer_id = $1 THEN 'buy' ELSE 'sell' END AS side
+          FROM trades
+         WHERE buyer_id = $1 OR seller_id = $1
+         ORDER BY executed_at DESC
+         LIMIT 20
+      `, [userId]),
+    ]);
+    if (!userRes.rows[0]) return res.status(404).json({ error: 'User not found' });
+    res.json({
+      user:     userRes.rows[0],
+      balances: balancesRes.rows,
+      orders:   ordersRes.rows,
+      trades:   tradesRes.rows,
+    });
   } catch (err) { next(err); }
 });
 
