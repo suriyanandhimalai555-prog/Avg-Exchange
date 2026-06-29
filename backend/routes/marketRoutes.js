@@ -1,20 +1,30 @@
+/**
+ * routes/marketRoutes.js — CoinGecko proxy, Binance live tickers, and static coin data.
+ */
+
+'use strict';
+
 const express       = require('express');
 const axios         = require('axios');
-const binanceStream = require('../services/binanceStreamService');
+const config        = require('../config');
 const db            = require('../db');
-const router        = express.Router();
+const binanceStream = require('../services/binanceStreamService');
+const ApiCache      = require('../utils/apiCache');
+const { SYMBOLS, QUOTE_CURRENCY } = require('../config/pairs');
 
-// ── In-memory response cache ──────────────────────────────────────────────────
-// Keyed by serialised query params so different per_page/page combos are cached
-// independently. All clients (bot + every frontend user) share this cache, so
-// we make at most 1 CoinGecko call per TTL window per unique query combination.
-const CACHE_TTL_MS = 60_000; // 60 seconds — well within CoinGecko free-tier limits
-const cache = new Map(); // key → { data, fetchedAt }
+const router = express.Router();
+const cache  = new ApiCache(60_000);
 
-function cacheKey(params) {
-  const { vs_currency = 'usd', per_page = 15, page = 1, order = 'market_cap_desc' } = params;
-  return `${vs_currency}|${per_page}|${page}|${order}`;
-}
+// GET /api/markets/pairs — canonical list of supported trading pairs.
+// This is the single source of truth (config/pairs.js); the frontend mirrors
+// it in constants/pairs.js and should prefer this endpoint where practical.
+router.get('/pairs', (_req, res) => {
+  res.json({
+    quote:   QUOTE_CURRENCY,
+    symbols: SYMBOLS,
+    pairs:   SYMBOLS.map(s => `${s}/${QUOTE_CURRENCY}`),
+  });
+});
 
 // GET /api/markets — CoinGecko proxy with server-side caching
 router.get('/', async (req, res) => {
@@ -26,47 +36,30 @@ router.get('/', async (req, res) => {
   } = req.query;
 
   const limit = Math.min(parseInt(per_page, 10) || 15, 250);
-  const key   = cacheKey({ vs_currency, per_page: limit, page, order });
-  const now   = Date.now();
+  const key   = `coingecko|${vs_currency}|${limit}|${page}|${order}`;
 
-  // ── Serve from cache if fresh ─────────────────────────────────────────────
-  const hit = cache.get(key);
-  if (hit && now - hit.fetchedAt < CACHE_TTL_MS) {
-    res.set('X-Cache', 'HIT');
-    return res.json(hit.data);
-  }
-
-  // ── Fetch from CoinGecko ──────────────────────────────────────────────────
   try {
-    const { data } = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
-      params:  { vs_currency, order, per_page: limit, page },
-      headers: process.env.COINGECKO_API_KEY
-        ? { 'x-cg-demo-api-key': process.env.COINGECKO_API_KEY }
-        : {},
-      timeout: 8_000,
+    const { data, cacheStatus } = await cache.wrap(key, async () => {
+      const { data } = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+        params:  { vs_currency, order, per_page: limit, page },
+        headers: config.coingeckoApiKey
+          ? { 'x-cg-demo-api-key': config.coingeckoApiKey }
+          : {},
+        timeout: 8_000,
+      });
+      return data;
     });
 
-    cache.set(key, { data, fetchedAt: now });
-    res.set('X-Cache', 'MISS');
-    return res.json(data);
-
+    res.set('X-Cache', cacheStatus);
+    res.json(data);
   } catch (err) {
-    // ── Return stale cache rather than an error ───────────────────────────
-    if (hit) {
-      const ageS = Math.round((now - hit.fetchedAt) / 1000);
-      res.set('X-Cache', `STALE age=${ageS}s`);
-      return res.json(hit.data);
-    }
-
     const status = err.response?.status ?? 500;
-    return res.status(status).json({ error: 'Failed to fetch market data', detail: err.message });
+    res.status(status).json({ error: 'Failed to fetch market data', detail: err.message });
   }
 });
 
-// GET /api/markets/live — returns Binance real-time ticker for all tracked pairs.
-// Shape: { BTC: { symbol, price, change24h, high24h, low24h, volume24h, ts }, ... }
-// Returns 503 if the stream hasn't populated the cache yet (< ~1 s after boot).
-router.get('/live', (req, res) => {
+// GET /api/markets/live — Binance real-time tickers
+router.get('/live', (_req, res) => {
   const tickers = binanceStream.getAllTickers();
   if (Object.keys(tickers).length === 0) {
     return res.status(503).json({ error: 'Live prices not yet available — stream is connecting' });
@@ -74,15 +67,15 @@ router.get('/live', (req, res) => {
   res.json(tickers);
 });
 
-// GET /api/markets/static-coin — public, returns the enabled static coin for the trade page
-router.get('/static-coin', async (req, res) => {
+// GET /api/markets/static-coin — public, returns enabled static coin
+router.get('/static-coin', async (_req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT symbol, min_price, max_price, current_price, price_24h_ago FROM static_coin_config WHERE enabled = TRUE LIMIT 1`
+      `SELECT symbol, min_price, max_price, current_price, price_24h_ago
+         FROM static_coin_config WHERE enabled = TRUE LIMIT 1`
     );
-    if (!rows[0]) return res.json(null);
-    res.json(rows[0]);
-  } catch (err) {
+    res.json(rows[0] || null);
+  } catch (_) {
     res.status(500).json(null);
   }
 });

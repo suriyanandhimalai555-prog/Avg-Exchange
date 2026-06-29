@@ -1,25 +1,28 @@
-const db = require('../db');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+/**
+ * controllers/userController.js — Auth flow handlers (OTP-based login & signup).
+ */
+
+'use strict';
+
+const jwt       = require('jsonwebtoken');
+const bcrypt    = require('bcrypt');
 const validator = require('validator');
-const crypto = require('crypto');
-const emailService = require('../services/emailService');
+const crypto    = require('crypto');
+const config    = require('../config');
+const db        = require('../db');
+const email     = require('../services/emailService');
 
-const SESSION_EXPIRY = '3h';
-const SESSION_MAX_AGE = 3 * 60 * 60 * 1000; // 3 hours in ms
-const OTP_EXPIRY_MINUTES = 10;
+const REFERRAL_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const REFERRAL_PREFIX = 'MAX';
 
-// Helper: Create JWT
 const createToken = (id) => {
-  return jwt.sign({ id }, process.env.SECRET, { expiresIn: SESSION_EXPIRY });
+  return jwt.sign({ id }, config.secret, { expiresIn: config.sessionExpiry });
 };
 
-// Helper: Generate a unique referral code — prefix 'MAX' + 6 random uppercase alphanumeric chars
 const generateReferralCode = () => {
-  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const bytes = crypto.randomBytes(6);
-  const suffix = Array.from(bytes).map(b => CHARS[b % CHARS.length]).join('');
-  return 'MAX' + suffix;
+  const suffix = Array.from(bytes).map(b => REFERRAL_CHARS[b % REFERRAL_CHARS.length]).join('');
+  return REFERRAL_PREFIX + suffix;
 };
 
 const generateUniqueReferralCode = async () => {
@@ -31,14 +34,29 @@ const generateUniqueReferralCode = async () => {
   throw new Error('Failed to generate unique referral code — please try again');
 };
 
+const setCookieAndRespond = (res, user, token) => {
+  res.cookie('token', token, {
+    ...config.cookieDefaults,
+    maxAge: config.sessionMaxAge,
+  });
+  res.status(200).json({
+    id:           user.id,
+    email:        user.email,
+    name:         user.name,
+    referralCode: user.referral_code,
+    isAdmin:      user.is_admin || false,
+    token,
+  });
+};
+
 // ── Login — Step 1: validate credentials, send OTP ──────────────
 const loginUser = async (req, res, next) => {
-  const { email, password } = req.body;
+  const { email: userEmail, password } = req.body;
 
   try {
-    if (!email || !password) throw Error('All fields must be filled');
+    if (!userEmail || !password) throw Error('All fields must be filled');
 
-    const result = await db.query('SELECT * FROM "User" WHERE email = $1', [email.toLowerCase().trim()]);
+    const result = await db.query('SELECT * FROM "User" WHERE email = $1', [userEmail.toLowerCase().trim()]);
     const user = result.rows[0];
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -46,7 +64,7 @@ const loginUser = async (req, res, next) => {
     }
 
     const code = crypto.randomInt(100000, 999999).toString();
-    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
+    const expiresAt = new Date(Date.now() + config.otpExpiryMinutes * 60 * 1000);
 
     await db.query(
       `INSERT INTO otp_tokens (user_id, email, type, code, expires_at, used)
@@ -60,8 +78,7 @@ const loginUser = async (req, res, next) => {
       [user.id, user.email.toLowerCase(), code, expiresAt]
     );
 
-    emailService.sendOtpEmail(user.email, code, 'login');
-
+    email.sendOtpEmail(user.email, code, 'login');
     res.status(200).json({ otpSent: true, email: user.email });
   } catch (error) {
     res.status(400);
@@ -71,10 +88,10 @@ const loginUser = async (req, res, next) => {
 
 // ── Login — Step 2: verify OTP, issue session token ─────────────
 const verifyLoginOtp = async (req, res, next) => {
-  const { email, code } = req.body;
+  const { email: userEmail, code } = req.body;
 
   try {
-    if (!email || !code) throw Error('Email and OTP code are required');
+    if (!userEmail || !code) throw Error('Email and OTP code are required');
 
     const { rows } = await db.query(
       `SELECT t.id, t.code, t.expires_at, t.used,
@@ -82,28 +99,23 @@ const verifyLoginOtp = async (req, res, next) => {
          FROM otp_tokens t
          JOIN "User" u ON u.id = t.user_id
         WHERE t.email = $1 AND t.type = 'login'`,
-      [email.toLowerCase().trim()]
+      [userEmail.toLowerCase().trim()]
     );
 
     if (rows.length === 0) throw Error('Invalid or expired OTP');
     const row = rows[0];
 
-    if (row.used) throw Error('This OTP has already been used. Please log in again.');
+    if (row.used)                          throw Error('This OTP has already been used. Please log in again.');
     if (new Date() > new Date(row.expires_at)) throw Error('OTP has expired. Please log in again.');
-    if (row.code !== code.trim()) throw Error('Invalid OTP code');
+    if (row.code !== code.trim())          throw Error('Invalid OTP code');
 
     await db.query('UPDATE otp_tokens SET used = TRUE WHERE id = $1', [row.id]);
 
     const token = createToken(row.user_id);
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: SESSION_MAX_AGE });
-    res.status(200).json({
-      id:           row.user_id,
-      email:        row.user_email,
-      name:         row.name,
-      referralCode: row.referral_code,
-      isAdmin:      row.is_admin || false,
-      token,
-    });
+    setCookieAndRespond(res, {
+      id: row.user_id, email: row.user_email,
+      name: row.name, referral_code: row.referral_code, is_admin: row.is_admin,
+    }, token);
   } catch (error) {
     res.status(400);
     next(error);
@@ -112,14 +124,14 @@ const verifyLoginOtp = async (req, res, next) => {
 
 // ── Signup — Step 1: validate, store pending data, send OTP ─────
 const signupUser = async (req, res, next) => {
-  const { name, email, password, referralCode } = req.body;
+  const { name, email: userEmail, password, referralCode } = req.body;
 
   try {
-    if (!name || !email || !password) throw Error('All fields must be filled');
-    if (!validator.isEmail(email)) throw Error('Email not valid');
+    if (!name || !userEmail || !password) throw Error('All fields must be filled');
+    if (!validator.isEmail(userEmail)) throw Error('Email not valid');
     if (!validator.isStrongPassword(password)) throw Error('Password not strong enough');
 
-    const userCheck = await db.query('SELECT 1 FROM "User" WHERE email = $1', [email.toLowerCase().trim()]);
+    const userCheck = await db.query('SELECT 1 FROM "User" WHERE email = $1', [userEmail.toLowerCase().trim()]);
     if (userCheck.rows.length > 0) throw Error('Email already in use');
 
     let referredById = null;
@@ -132,8 +144,8 @@ const signupUser = async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, salt);
 
     const code = crypto.randomInt(100000, 999999).toString();
-    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-    const signupData = { name, email: email.toLowerCase().trim(), passwordHash, referredById };
+    const expiresAt = new Date(Date.now() + config.otpExpiryMinutes * 60 * 1000);
+    const signupData = { name, email: userEmail.toLowerCase().trim(), passwordHash, referredById };
 
     await db.query(
       `INSERT INTO otp_tokens (user_id, email, type, code, signup_data, expires_at, used)
@@ -144,12 +156,11 @@ const signupUser = async (req, res, next) => {
              expires_at  = EXCLUDED.expires_at,
              used        = FALSE,
              created_at  = NOW()`,
-      [email.toLowerCase().trim(), code, JSON.stringify(signupData), expiresAt]
+      [userEmail.toLowerCase().trim(), code, JSON.stringify(signupData), expiresAt]
     );
 
-    emailService.sendOtpEmail(email, code, 'signup');
-
-    res.status(200).json({ otpSent: true, email });
+    email.sendOtpEmail(userEmail, code, 'signup');
+    res.status(200).json({ otpSent: true, email: userEmail });
   } catch (error) {
     res.status(400);
     next(error);
@@ -158,26 +169,26 @@ const signupUser = async (req, res, next) => {
 
 // ── Signup — Step 2: verify OTP, create user, issue session token
 const verifySignupOtp = async (req, res, next) => {
-  const { email, code } = req.body;
+  const { email: userEmail, code } = req.body;
 
   try {
-    if (!email || !code) throw Error('Email and OTP code are required');
+    if (!userEmail || !code) throw Error('Email and OTP code are required');
 
     const { rows } = await db.query(
       `SELECT * FROM otp_tokens WHERE email = $1 AND type = 'signup'`,
-      [email.toLowerCase().trim()]
+      [userEmail.toLowerCase().trim()]
     );
 
     if (rows.length === 0) throw Error('Invalid or expired OTP');
     const otpRow = rows[0];
 
-    if (otpRow.used) throw Error('This OTP has already been used. Please sign up again.');
+    if (otpRow.used)                             throw Error('This OTP has already been used. Please sign up again.');
     if (new Date() > new Date(otpRow.expires_at)) throw Error('OTP has expired. Please sign up again.');
-    if (otpRow.code !== code.trim()) throw Error('Invalid OTP code');
+    if (otpRow.code !== code.trim())             throw Error('Invalid OTP code');
 
     const { name, email: storedEmail, passwordHash, referredById } = otpRow.signup_data;
 
-    // Race-condition guard: re-check email hasn't been registered in the meantime
+    // Race-condition guard
     const userCheck = await db.query('SELECT 1 FROM "User" WHERE email = $1', [storedEmail]);
     if (userCheck.rows.length > 0) throw Error('Email already in use');
 
@@ -196,15 +207,10 @@ const verifySignupOtp = async (req, res, next) => {
     await db.query('UPDATE otp_tokens SET used = TRUE, user_id = $1 WHERE id = $2', [user.id, otpRow.id]);
 
     const token = createToken(user.id);
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: SESSION_MAX_AGE });
-    res.status(200).json({
-      id:           user.id,
-      email:        storedEmail,
-      name:         user.name,
-      referralCode: user.referral_code,
-      isAdmin:      false,
-      token,
-    });
+    setCookieAndRespond(res, {
+      id: user.id, email: storedEmail,
+      name: user.name, referral_code: user.referral_code, is_admin: false,
+    }, token);
   } catch (error) {
     res.status(400);
     next(error);

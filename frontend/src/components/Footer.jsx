@@ -48,7 +48,7 @@ const Footer = () => {
         </div>
 
         <div className={s.bottomBar}>
-          <p className={s.copy}>© 2024 AVG Exchange. All rights reserved.</p>
+          <p className={s.copy}>© 2026 AVG Exchange. All rights reserved.</p>
           <div className={s.socialGroup}>
             <IoLogoTwitter className={s.socialIcon} />
             <IoLogoDiscord className={s.socialIcon} />

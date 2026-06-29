@@ -1,16 +1,13 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import axios from 'axios';
-import API_URL from '../config/api';
+import { userApi, marketApi } from '../api';
 
 export const fetchNavbarBalance = createAsyncThunk(
   'balance/fetchNavbar',
   async (_, { rejectWithValue }) => {
     try {
       const [balRes, mktRes] = await Promise.all([
-        axios.get(`${API_URL}/api/user/balance`, { withCredentials: true }),
-        axios.get(`${API_URL}/api/markets`, {
-          params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
-        }),
+        userApi.getBalance(),
+        marketApi.getMarkets({ vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 }),
       ]);
 
       const balances = balRes.data ?? {};
@@ -34,22 +31,17 @@ export const fetchNavbarBalance = createAsyncThunk(
 const balanceSlice = createSlice({
   name: 'balance',
   initialState: {
-    totalUSD: null,   // null = not loaded yet
+    totalUSD: null,
     loading: false,
   },
   reducers: {
-    clearBalance(state) {
-      state.totalUSD = null;
-    },
+    clearBalance(state) { state.totalUSD = null; },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchNavbarBalance.pending,  (state) => { state.loading = true; })
-      .addCase(fetchNavbarBalance.fulfilled, (state, action) => {
-        state.loading  = false;
-        state.totalUSD = action.payload;
-      })
-      .addCase(fetchNavbarBalance.rejected, (state) => { state.loading = false; });
+      .addCase(fetchNavbarBalance.pending,   (s) => { s.loading = true; })
+      .addCase(fetchNavbarBalance.fulfilled, (s, a) => { s.loading = false; s.totalUSD = a.payload; })
+      .addCase(fetchNavbarBalance.rejected,  (s) => { s.loading = false; });
   },
 });
 

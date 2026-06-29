@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { authStyles as s } from '../components/AuthStyles';
-import API_URL from '../config/api';
+import client from '../api/client';
 import BitcoinVideo from '../assets/Bitcoin_spinning.mp4';
 
 const STEPS = { EMAIL: 'email', CODE: 'code', DONE: 'done' };
@@ -26,16 +26,10 @@ const ForgotPassword = () => {
     setError('');
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/user/forgot-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Request failed');
+      await client.post('/api/user/forgot-password', { email });
       setStep(STEPS.CODE);
     } catch (err) {
-      setError(err.message);
+      setError(err.response?.data?.error || err.message);
     } finally {
       setLoading(false);
     }
@@ -51,16 +45,10 @@ const ForgotPassword = () => {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/user/reset-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code, newPassword: password }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Reset failed');
+      await client.post('/api/user/reset-password', { email, code, newPassword: password });
       setStep(STEPS.DONE);
     } catch (err) {
-      setError(err.message);
+      setError(err.response?.data?.error || err.message);
     } finally {
       setLoading(false);
     }

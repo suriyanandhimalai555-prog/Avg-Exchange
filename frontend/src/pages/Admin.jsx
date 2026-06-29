@@ -5,18 +5,20 @@
 // Updating stats never re-renders tables, updating orders never re-renders stats, etc.
 
 import { useState, useEffect, useCallback, useRef, memo } from 'react';
-import axios from 'axios';
 import { io } from 'socket.io-client';
 import { useSelector } from 'react-redux';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
-import API_URL from '../config/api';
+import client, { API_URL } from '../api/client';
+import { adminApi } from '../api';
+import { ADMIN_REFRESH } from '../constants/socket';
 import {
   LuUsers, LuPackage, LuRepeat2, LuShieldCheck,
   LuCircleCheck, LuCircleX, LuTriangleAlert,
   LuFileText, LuChevronLeft, LuChevronRight, LuArrowRight,
 } from 'react-icons/lu';
+import ReferralsTab from '../components/admin/ReferralsTab';
 
-const TABS = ['Overview', 'KYC', 'Users', 'Orders', 'Static Coin'];
+const TABS = ['Overview', 'KYC', 'Users', 'Orders', 'Referrals', 'Static Coin'];
 const ORDERS_LIMIT = 50;
 
 // ── Shared UI primitives ─────────────────────────────────────
@@ -80,7 +82,7 @@ const useAdminSocket = (callback, throttleMs = 3000) => {
 
   useEffect(() => {
     const socket = io(API_URL, { withCredentials: true });
-    socket.on('admin:refresh', () => {
+    socket.on(ADMIN_REFRESH, () => {
       const now = Date.now();
       if (now - lastFired.current < throttleMs) return;
       lastFired.current = now;
@@ -111,7 +113,7 @@ const StatsBar = memo(({ onStatsChange }) => {
 
   const fetchStats = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/stats`, { withCredentials: true });
+      const { data } = await client.get('/api/admin/stats');
       setStats(data);
       if (onStatsChange) onStatsChange(data);
     } catch (_) {}
@@ -143,7 +145,7 @@ const OverviewTab = memo(() => {
 
   const fetchStats = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/stats`, { withCredentials: true });
+      const { data } = await client.get('/api/admin/stats');
       setStats(data);
     } catch (_) {}
   }, []);
@@ -187,7 +189,7 @@ const KycTab = memo(() => {
   const fetchKyc = useCallback(async () => {
     setError(false);
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/kyc`, { withCredentials: true });
+      const { data } = await client.get('/api/admin/kyc');
       setKyc(data);
     } catch (_) { setError(true); }
   }, []);
@@ -198,7 +200,7 @@ const KycTab = memo(() => {
   const handleApprove = async (userId) => {
     setLoading(true);
     try {
-      await axios.post(`${API_URL}/api/admin/kyc/${userId}/approve`, {}, { withCredentials: true });
+      await client.post(`/api/admin/kyc/${userId}/approve`);
       flash('KYC approved');
       fetchKyc();
     } catch { flash('Failed to approve', 'error'); }
@@ -209,7 +211,7 @@ const KycTab = memo(() => {
     if (!rejectTarget) return;
     setLoading(true);
     try {
-      await axios.post(`${API_URL}/api/admin/kyc/${rejectTarget}/reject`, { note: rejectNote }, { withCredentials: true });
+      await client.post(`/api/admin/kyc/${rejectTarget}/reject`, { note: rejectNote });
       flash('KYC rejected');
       setRejectTarget(null); setRejectNote('');
       fetchKyc();
@@ -337,7 +339,7 @@ const UsersTab = memo(() => {
   const fetchUsers = useCallback(async () => {
     setError(false);
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/users`, { withCredentials: true });
+      const { data } = await client.get('/api/admin/users');
       setUsers(data);
     } catch (_) { setError(true); }
   }, []);
@@ -464,9 +466,8 @@ const OrdersTab = memo(() => {
     const target = p ?? pageRef.current;
     setError(false);
     try {
-      const { data } = await axios.get(
-        `${API_URL}/api/admin/orders?page=${target}&limit=${ORDERS_LIMIT}`,
-        { withCredentials: true }
+      const { data } = await client.get(
+        `/api/admin/orders?page=${target}&limit=${ORDERS_LIMIT}`
       );
       setOrders(data.orders);
       setMeta({ total: data.total, pages: data.pages });
@@ -556,7 +557,7 @@ const StaticCoinTab = memo(() => {
   const fetchConfig = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/static-coin`, { withCredentials: true });
+      const { data } = await client.get('/api/admin/static-coin');
       if (data) {
         setForm({
           symbol:        data.symbol,
@@ -577,7 +578,7 @@ const StaticCoinTab = memo(() => {
     setSaving(true);
     setMsg(null);
     try {
-      await axios.put(`${API_URL}/api/admin/static-coin`, form, { withCredentials: true });
+      await client.put('/api/admin/static-coin', form);
       setMsg({ type: 'success', text: 'Static coin config saved successfully' });
     } catch (err) {
       setMsg({ type: 'error', text: err.response?.data?.error || 'Failed to save' });
@@ -666,6 +667,7 @@ const TAB_FROM_PARAM = {
   kyc:         'KYC',
   users:       'Users',
   orders:      'Orders',
+  referrals:   'Referrals',
   'static-coin': 'Static Coin',
 };
 
@@ -734,6 +736,7 @@ const Admin = () => {
         {tab === 'KYC'          && <KycTab />}
         {tab === 'Users'        && <UsersTab />}
         {tab === 'Orders'       && <OrdersTab />}
+        {tab === 'Referrals'    && <ReferralsTab />}
         {tab === 'Static Coin'  && <StaticCoinTab />}
 
       </div>

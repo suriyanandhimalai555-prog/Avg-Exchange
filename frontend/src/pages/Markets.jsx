@@ -1,8 +1,7 @@
 // frontend/src/pages/Markets.jsx
 import React, { useEffect, useState, useMemo } from 'react';
-import axios from 'axios';
+import client from '../api/client';
 import { marketStyles as s } from '../components/MarketStyles';
-import API_URL from '../config/api';
 import { IoStatsChart, IoSearch, IoTrendingUp, IoTrendingDown } from 'react-icons/io5';
 
 const Markets = () => {
@@ -15,7 +14,7 @@ const Markets = () => {
   useEffect(() => {
     const fetchCryptos = async () => {
       try {
-        const { data } = await axios.get(`${API_URL}/api/markets`, {
+        const { data } = await client.get('/api/markets', {
           params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
         });
         setCryptos(data);

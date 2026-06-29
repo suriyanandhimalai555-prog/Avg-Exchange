@@ -23,7 +23,7 @@ async function main() {
   console.log(`  Pairs    : ${config.BOT_PAIRS.join(', ')}`);
   console.log(`  Spread   : ±${config.BOT_SPREAD_PCT}% per side`);
   console.log(`  Levels   : ${config.BOT_LEVELS} per side`);
-  console.log(`  Size     : ${config.BOT_ORDER_SIZE} per order`);
+  console.log(`  Size     : $${config.BOT_ORDER_VALUE_USD} per order (static: $${config.BOT_STATIC_ORDER_VALUE_USD})`);
   console.log(`  Interval : ${config.BOT_INTERVAL_MS / 1000}s`);
   console.log('═'.repeat(50));
 

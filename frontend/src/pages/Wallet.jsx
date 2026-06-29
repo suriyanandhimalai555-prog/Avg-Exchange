@@ -2,14 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { fetchNavbarBalance } from '../features/balanceSlice';
-import axios from 'axios';
+import client, { API_URL } from '../api/client';
 import { io } from 'socket.io-client';
 import {
   IoWalletOutline, IoAddCircleOutline, IoSwapHorizontalOutline,
   IoTimeOutline, IoBarChartOutline,
   IoEyeOutline, IoEyeOffOutline, IoRefreshOutline,
 } from 'react-icons/io5';
-import API_URL from '../config/api';
 import DepositModal from '../components/dashboard/DepositModal';
 
 const SUPPORTED_COINS = [
@@ -60,9 +59,9 @@ const Wallet = () => {
   const fetchAll = useCallback(async () => {
     try {
       const [balRes, ordRes, trdRes] = await Promise.all([
-        axios.get(`${API_URL}/api/user/balance`,  { withCredentials: true }),
-        axios.get(`${API_URL}/api/trade/orders`,  { withCredentials: true }),
-        axios.get(`${API_URL}/api/trade/trades`,  { withCredentials: true }),
+        client.get('/api/user/balance'),
+        client.get('/api/trade/orders'),
+        client.get('/api/trade/trades'),
       ]);
       setBalances(balRes.data ?? {});
       setOrders(ordRes.data   ?? []);
@@ -72,7 +71,7 @@ const Wallet = () => {
 
   const fetchPrices = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/api/markets`, {
+      const { data } = await client.get('/api/markets', {
         params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
       });
       const map = { USDT: 1 };
@@ -111,7 +110,7 @@ const Wallet = () => {
   const handleCancelOrder = async (orderId) => {
     setCancellingId(orderId);
     try {
-      await axios.delete(`${API_URL}/api/trade/order/${orderId}`, { withCredentials: true });
+      await client.delete(`/api/trade/order/${orderId}`);
       fetchAll();
     } catch (_) {}
     finally { setCancellingId(null); }

@@ -3,14 +3,13 @@
 // OxaPay returns a real blockchain address. We poll status via trackId.
 import { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'react-qr-code';
-import axios from 'axios';
+import client from '../../api/client';
 import {
   IoArrowDownOutline, IoCloseOutline,
   IoAlertCircleOutline, IoCheckmarkCircleOutline,
   IoCopyOutline, IoRefreshOutline,
 } from 'react-icons/io5';
 import { LuTriangleAlert } from 'react-icons/lu';
-import API_URL from '../../config/api';
 
 const COINS = [
   { symbol: 'USDT', color: '#26a17b', networks: ['TRX', 'ETH', 'BSC'] },
@@ -84,8 +83,7 @@ const PaymentScreen = ({ payment, onPaid, onExpired, onBack }) => {
       count++;
       if (count >= POLL_MAX) { clearInterval(id); onExpiredRef.current(); return; }
       try {
-        const { data } = await axios.get(`${API_URL}/api/payment/status/${payment.trackId}`,
-          { withCredentials: true });
+        const { data } = await client.get(`/api/payment/status/${payment.trackId}`);
         setStatus(data.status);
         if (data.status === 'Paid') { clearInterval(id); onPaidRef.current(data); }
         else if (['Expired', 'Error'].includes(data.status)) { clearInterval(id); onExpiredRef.current(); }
@@ -223,10 +221,9 @@ const DepositModal = ({ open, onClose, onSuccess }) => {
     setLoading(true);
     setError(null);
     try {
-      const { data } = await axios.post(
-        `${API_URL}/api/payment/whitelabel`,
-        { currency: coin, network, amount: amt },
-        { withCredentials: true }
+      const { data } = await client.post(
+        '/api/payment/whitelabel',
+        { currency: coin, network, amount: amt }
       );
       setPayment(data);
     } catch (err) {

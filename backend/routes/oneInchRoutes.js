@@ -1,17 +1,30 @@
+/**
+ * routes/oneInchRoutes.js — 1inch DEX aggregator proxy.
+ */
+
+'use strict';
+
 const express = require('express');
-const axios = require('axios');
+const axios   = require('axios');
+const config  = require('../config');
+
 const router = express.Router();
 
 const SUPPORTED_CHAIN_IDS = new Set([1, 56, 137, 42161, 10, 8453, 43114]);
 
 const getHeaders = () => ({
-  Authorization: `Bearer ${process.env.ONE_INCH_API_KEY}`,
+  Authorization: `Bearer ${config.oneInchApiKey}`,
   'Content-Type': 'application/json',
 });
 
-const forwardRequest = async (res, method, url, config = {}) => {
+const parseChainId = (raw, fallback = 1) => {
+  const id = parseInt(raw, 10);
+  return SUPPORTED_CHAIN_IDS.has(id) ? id : fallback;
+};
+
+const forwardRequest = async (res, method, url, reqConfig = {}) => {
   try {
-    const response = await axios({ method, url, ...config });
+    const response = await axios({ method, url, ...reqConfig });
     res.status(200).json(response.data);
   } catch (error) {
     console.error(`1inch API Error [${url}]:`, error.response?.data || error.message);
@@ -22,11 +35,6 @@ const forwardRequest = async (res, method, url, config = {}) => {
   }
 };
 
-const parseChainId = (raw, fallback = 1) => {
-  const id = parseInt(raw, 10);
-  return SUPPORTED_CHAIN_IDS.has(id) ? id : fallback;
-};
-
 // GET /api/1inch/tokens?chainId=1
 router.get('/tokens', async (req, res) => {
   const chainId = parseChainId(req.query.chainId);
@@ -35,11 +43,11 @@ router.get('/tokens', async (req, res) => {
   try {
     const response = await axios.get(url, { headers: getHeaders() });
     const tokenList = Object.values(response.data).map(t => ({
-      symbol: t.symbol,
-      name: t.name,
-      address: t.address,
+      symbol:   t.symbol,
+      name:     t.name,
+      address:  t.address,
       decimals: t.decimals,
-      logoURI: t.logoURI,
+      logoURI:  t.logoURI,
     }));
     res.status(200).json(tokenList);
   } catch (error) {
@@ -48,7 +56,7 @@ router.get('/tokens', async (req, res) => {
   }
 });
 
-// GET /api/1inch/swap/quote?chainId=1&src=&dst=&amount=
+// GET /api/1inch/swap/quote
 router.get('/swap/quote', (req, res) => {
   const { src, dst, amount } = req.query;
   if (!src || !dst || !amount) {
@@ -59,7 +67,7 @@ router.get('/swap/quote', (req, res) => {
   forwardRequest(res, 'get', url, { headers: getHeaders(), params: { src, dst, amount } });
 });
 
-// GET /api/1inch/swap/build?chainId=1&src=&dst=&amount=&from=&slippage=
+// GET /api/1inch/swap/build
 router.get('/swap/build', (req, res) => {
   const { src, dst, amount, from, slippage } = req.query;
   if (!src || !dst || !amount || !from) {

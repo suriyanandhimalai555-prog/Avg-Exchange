@@ -1,18 +1,17 @@
 /**
- * s3Service.js — AWS S3 helpers for KYC document storage
+ * s3Service.js — AWS S3 helpers for KYC document storage.
  *
- * getUploadUrl(key, contentType) → short-lived presigned PUT URL (5 min)
- *   Frontend PUTs the file directly to S3 — our server never holds the bytes.
- *
- * getDownloadUrl(key) → short-lived presigned GET URL (1 hour)
- *   Admin panel uses this to view documents without making the bucket public.
+ * getUploadUrl(key, contentType) -> presigned PUT URL (5 min)
+ * getDownloadUrl(key) -> presigned GET URL (1 hour)
  */
+
+'use strict';
 
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const config = require('../config');
 
-const BUCKET = process.env.AWS_S3_BUCKET;
-const REGION = process.env.AWS_REGION || 'us-east-1';
+const BUCKET = config.aws.s3Bucket;
 
 const ALLOWED_CONTENT_TYPES = new Set([
   'image/jpeg',
@@ -26,39 +25,24 @@ if (!BUCKET) {
 }
 
 const s3 = new S3Client({
-  region: REGION,
+  region: config.aws.region,
   credentials: {
-    accessKeyId:     process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    accessKeyId:     config.aws.accessKeyId,
+    secretAccessKey: config.aws.secretAccessKey,
   },
 });
 
-/**
- * Returns a presigned PUT URL the browser uses to upload directly to S3.
- * @param {string} key         — S3 object key e.g. "kyc/42/1717000000000.jpg"
- * @param {string} contentType — MIME type of the file
- * @returns {Promise<string>}  — presigned URL (expires in 5 minutes)
- */
 const getUploadUrl = async (key, contentType) => {
   if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
     throw new Error(`Unsupported file type: ${contentType}. Allowed: JPEG, PNG, PDF`);
   }
-  const cmd = new PutObjectCommand({
-    Bucket:      BUCKET,
-    Key:         key,
-    ContentType: contentType,
-  });
-  return getSignedUrl(s3, cmd, { expiresIn: 300 }); // 5 minutes
+  const cmd = new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: contentType });
+  return getSignedUrl(s3, cmd, { expiresIn: 300 });
 };
 
-/**
- * Returns a presigned GET URL for admins to view a stored document.
- * @param {string} key  — S3 object key stored in kyc_submissions.document_path
- * @returns {Promise<string>}  — presigned URL (expires in 1 hour)
- */
 const getDownloadUrl = async (key) => {
   const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: key });
-  return getSignedUrl(s3, cmd, { expiresIn: 3600 }); // 1 hour
+  return getSignedUrl(s3, cmd, { expiresIn: 3600 });
 };
 
 module.exports = { getUploadUrl, getDownloadUrl };

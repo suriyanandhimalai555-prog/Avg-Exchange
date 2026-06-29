@@ -16,8 +16,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import API_URL from '../config/api';
-import axios from 'axios';
+import client, { API_URL } from '../api/client';
 
 // ── constants ──────────────────────────────────────────────────────────────
 const CANDLE_INTERVALS = {
@@ -217,7 +216,7 @@ const StaticCoinChart = ({ symbol, livePrice, minPrice, maxPrice }) => {
     let cancelled = false;
     (async () => {
       try {
-        const { data } = await axios.get(`${API_URL}/api/markets/static-coin`);
+        const { data } = await client.get('/api/markets/static-coin');
         if (cancelled) return;
         const cur = parseFloat(data.current_price);
         const mn  = parseFloat(data.min_price);

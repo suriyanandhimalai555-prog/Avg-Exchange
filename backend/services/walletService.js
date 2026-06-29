@@ -1,24 +1,19 @@
 /**
- * walletService.js — Withdrawal processing
+ * walletService.js — Withdrawal processing.
  *
- * Currently stubbed: deducts the balance in the database and returns success.
- * Replace the STUB section with your blockchain API call (e.g. Fireblocks, web3,
- * BitGo) when you are ready to wire live withdrawals.
+ * Currently stubbed: deducts balance and returns success.
+ * Replace the STUB section with blockchain API (Fireblocks, web3, BitGo).
  */
 
-const Decimal = require('decimal.js');
-const db = require('../db');
+'use strict';
+
+const Decimal = require('../utils/decimal');
+const db      = require('../db');
 
 /**
  * Process a withdrawal request.
- * Deducts `amount` of `currency` from the user's available balance and
- * records the intent. Does NOT send funds on-chain yet.
- *
- * @param {number} userId
- * @param {string} currency   e.g. 'BTC', 'USDT'
- * @param {number|string} amount
- * @param {string} toAddress  destination wallet address
- * @returns {{ success: boolean, txHash: string|null, message: string }}
+ * Deducts `amount` of `currency` from available balance.
+ * Does NOT send funds on-chain yet.
  */
 const processWithdrawal = async (userId, currency, amount, toAddress) => {
   if (!userId || !currency || !amount || !toAddress) {
@@ -30,7 +25,6 @@ const processWithdrawal = async (userId, currency, amount, toAddress) => {
     throw new Error('Withdrawal amount must be greater than zero');
   }
 
-  // ── 1. Verify and deduct balance (atomic) ─────────────────
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
@@ -63,20 +57,9 @@ const processWithdrawal = async (userId, currency, amount, toAddress) => {
     client.release();
   }
 
-  // ── 2. STUB — replace with live blockchain broadcast ───────
-  // Example (Fireblocks SDK, web3.js, etc.):
-  //
-  //   const tx = await blockchainClient.sendTransaction({
-  //     asset: currency,
-  //     amount: amount.toString(),
-  //     destination: toAddress,
-  //   });
-  //   return { success: true, txHash: tx.id, message: 'Withdrawal submitted' };
-  //
-  // For now, return a placeholder tx hash so the rest of the flow works.
+  // STUB — replace with live blockchain broadcast
   const stubTxHash = `STUB_${Date.now()}_${userId}`;
-
-  console.log(`[walletService] STUB withdrawal — user ${userId}: ${amount} ${currency} → ${toAddress} (${stubTxHash})`);
+  console.log(`[wallet] STUB withdrawal — user ${userId}: ${amount} ${currency} -> ${toAddress} (${stubTxHash})`);
 
   return {
     success: true,

@@ -1,11 +1,10 @@
 // frontend/src/pages/Trade.jsx
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import axios from 'axios';
 import { IoSearch, IoRefreshOutline } from 'react-icons/io5';
 import { useSelector, useDispatch } from 'react-redux';
 import { fetchNavbarBalance } from '../features/balanceSlice';
 import { Link, useSearchParams } from 'react-router-dom';
-import API_URL from '../config/api';
+import client from '../api/client';
 import TradingViewChart from '../components/TradingViewChart';
 import StaticCoinChart from '../components/StaticCoinChart';
 import useTradeSocket from '../hooks/useTradeSocket';
@@ -163,10 +162,10 @@ const Trade = () => {
 
   useEffect(() => {
     Promise.all([
-      axios.get(`${API_URL}/api/markets`, {
+      client.get('/api/markets', {
         params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
       }).catch(() => ({ data: null })),
-      axios.get(`${API_URL}/api/markets/static-coin`).catch(() => ({ data: null })),
+      client.get('/api/markets/static-coin').catch(() => ({ data: null })),
     ]).then(([marketsRes, staticRes]) => {
       const base = marketsRes.data || [];
       baseListRef.current = base;
@@ -182,7 +181,7 @@ const Trade = () => {
   // Poll static coin price every 15s so admin price changes reflect immediately
   useEffect(() => {
     const refresh = () =>
-      axios.get(`${API_URL}/api/markets/static-coin`).then(({ data }) => {
+      client.get('/api/markets/static-coin').then(({ data }) => {
         if (!data || !baseListRef.current) return;
         setMarketList(prev => {
           const without = prev.filter(c => !c._isStatic);
@@ -200,7 +199,7 @@ const Trade = () => {
     const pair = `${coin.symbol}/USDT`;
     try {
       setLoadingBook(true);
-      const { data } = await axios.get(`${API_URL}/api/trade/orderbook`, { params: { pair } });
+      const { data } = await client.get('/api/trade/orderbook', { params: { pair } });
       setAsks((data.asks || []).slice(0, MAX_ROWS));
       setBids((data.bids || []).slice(0, MAX_ROWS));
     } catch {
@@ -219,7 +218,7 @@ const Trade = () => {
   const fetchBalances = useCallback(async () => {
     if (!user) return;
     try {
-      const { data } = await axios.get(`${API_URL}/api/user/balance`, { withCredentials: true });
+      const { data } = await client.get('/api/user/balance');
       setBalances(data);
     } catch (_) {}
   }, [user]);
@@ -228,7 +227,7 @@ const Trade = () => {
 
   useEffect(() => {
     if (!user) { setKycStatus('none'); return; }
-    axios.get(`${API_URL}/api/kyc/status`, { withCredentials: true })
+    client.get('/api/kyc/status')
       .then(({ data }) => setKycStatus(data.status ?? 'none'))
       .catch(() => setKycStatus('none'));
   }, [user]);
@@ -270,10 +269,9 @@ const Trade = () => {
     setOrderFeedback(null);
     try {
       const orderType = side === 'buy' ? buyOrderType : sellOrderType;
-      const { data } = await axios.post(
-        `${API_URL}/api/trade/order`,
-        { pair: `${selectedCoin.symbol}/USDT`, side, type: orderType, price: numPrice, quantity: numQty },
-        { withCredentials: true }
+      const { data } = await client.post(
+        '/api/trade/order',
+        { pair: `${selectedCoin.symbol}/USDT`, side, type: orderType, price: numPrice, quantity: numQty }
       );
       const filled = data.executedTrades?.length ?? 0;
       const actualUSDT = (data.executedTrades ?? []).reduce(

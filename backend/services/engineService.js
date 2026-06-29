@@ -4,24 +4,19 @@
  * Uses `nodejs-order-book` (v10) to match limit orders in memory.
  * Every fill is immediately persisted to Postgres via db.settleFill().
  *
- * Result shape from book.limit():
- *   done         — array of fully-consumed orders (new order and/or book orders)
- *   partial      — one book order that was partially consumed (still in book, reduced qty)
- *   partialQuantityProcessed — quantity traded against the partial order
- *   quantityLeft — unmatched portion of the new order (stays in book if > 0)
- *   err          — Error object or null
- *
  * One OrderBook instance is maintained per trading pair.
  * recoverFromDB() reloads all open/partially-filled orders on server startup.
  */
 
+'use strict';
+
 const { OrderBook } = require('nodejs-order-book');
-const Decimal = require('decimal.js');
-const db = require('../db');
+const Decimal       = require('../utils/decimal');
+const db            = require('../db');
+const { parsePair } = require('../utils/validation');
 
 class EngineService {
   constructor() {
-    // Map<pair, OrderBook>  e.g. 'BTC/USDT' → OrderBook instance
     this._books = new Map();
   }
 
@@ -39,24 +34,18 @@ class EngineService {
     return this._books.get(pair);
   }
 
-  _parsePair(pair) {
-    const [base, quote] = pair.split('/');
-    if (!base || !quote) throw new Error(`Invalid trading pair: ${pair}`);
-    return { baseCurrency: base, quoteCurrency: quote };
+  /** Returns all pairs that currently have an order book instance. */
+  getPairs() {
+    return [...this._books.keys()];
   }
 
   /**
    * Returns the current order book depth for a pair.
    * @returns {{ asks: {price,amount}[], bids: {price,amount}[] }}
    */
-  /** Returns all pairs that currently have an order book instance. */
-  getPairs() {
-    return [...this._books.keys()];
-  }
-
   getDepth(pair) {
-    const book   = this._getBook(pair);
-    const [asks, bids] = book.depth();   // [[price,qty]...] asks asc, bids desc
+    const book = this._getBook(pair);
+    const [asks, bids] = book.depth();
     return {
       asks: (asks || []).map(([price, amount]) => ({ price, amount })),
       bids: (bids || []).map(([price, amount]) => ({ price, amount })),
@@ -65,9 +54,7 @@ class EngineService {
 
   /**
    * Returns the best available counterparty price for a market order.
-   * For a BUY  → returns the lowest ask  (best sell available).
-   * For a SELL → returns the highest bid (best buy available).
-   * Returns null if the side has no liquidity.
+   * BUY -> lowest ask. SELL -> highest bid. Null if no liquidity.
    */
   getBestPrice(pair, side) {
     const { asks, bids } = this.getDepth(pair);
@@ -77,25 +64,45 @@ class EngineService {
   }
 
   /**
-   * Submits a new order to the engine.
-   * Limit orders rest in the book; market orders consume available liquidity immediately.
-   * Settles any fills against the database atomically (one transaction per fill).
+   * Submits a new order to the engine, settles fills atomically.
    *
    * @param {object} order
-   * @param {number} order.id        DB-assigned order ID
-   * @param {number} order.userId
-   * @param {string} order.pair      e.g. 'BTC/USDT'
-   * @param {'buy'|'sell'} order.side
-   * @param {'limit'|'market'} order.type
-   * @param {number} order.price     limit price (ignored for market orders)
-   * @param {number} order.quantity
    * @returns {{ executedTrades: object[], quantityLeft: number }}
    */
   async placeOrder({ id: dbOrderId, userId, pair, side, type = 'limit', price, quantity, lockedAmount }) {
-    const { baseCurrency, quoteCurrency } = this._parsePair(pair);
+    const { baseCurrency, quoteCurrency } = parsePair(pair);
     const book = this._getBook(pair);
 
-    // ── Submit to book ────────────────────────────────────────
+    // Self-trade prevention: cancel any of this user's own resting orders on
+    // the opposite side that this order could cross before matching runs. The
+    // book has no notion of accounts, so without this step a user can match
+    // against their own stale orders (e.g. a bot whose old buys are still open).
+    // A limit order only crosses the opposite side up to its price; a market
+    // order crosses any price, so we cancel every own resting order on that side.
+    {
+      const oppositeSide = side === 'buy' ? 'sell' : 'buy';
+      const params       = [pair, oppositeSide, userId];
+      let priceClause    = '';
+      if (type === 'limit' && price != null) {
+        const crossOp = side === 'buy' ? '<=' : '>=';
+        priceClause   = ` AND price ${crossOp} $4`;
+        params.push(price);
+      }
+      const { rows: ownCrossable } = await db.query(
+        `SELECT id FROM orders
+          WHERE pair = $1 AND side = $2 AND user_id = $3
+            AND status IN ('open', 'partially_filled')${priceClause}`,
+        params
+      );
+      for (const own of ownCrossable) {
+        try {
+          await this.cancelOrder(own.id);
+        } catch (err) {
+          console.warn(`[engine] Self-trade guard: could not cancel ${own.id}: ${err.message}`);
+        }
+      }
+    }
+
     const result = type === 'market'
       ? book.market({ side, id: dbOrderId, size: quantity })
       : book.limit({  side, id: dbOrderId, size: quantity, price });
@@ -104,26 +111,37 @@ class EngineService {
       throw new Error(`Order book error: ${result.err.message}`);
     }
 
-    // ── Identify fills ────────────────────────────────────────
-    // `done` can contain both the new order (if fully consumed) and book orders
-    //  that were completely consumed. We only want the counterparty orders.
-    // `partial` is a single book order that was partially consumed.
+    const fills = this._extractFills(result, dbOrderId);
+    const { executedTrades, skippedQty } = await this._settleFills(fills, {
+      dbOrderId, userId, pair, side, type, price, lockedAmount,
+      baseCurrency, quoteCurrency, book,
+    });
+
+    // Any fill the book matched but we declined to settle (self-trade race or
+    // slippage) had its liquidity restored to the book; from the taker's point
+    // of view that quantity is unfilled, so add it back to quantityLeft. This
+    // keeps the caller's unlock accounting consistent with what actually traded.
+    const quantityLeft = (result.quantityLeft || 0) + skippedQty;
+
+    return { executedTrades, quantityLeft };
+  }
+
+  /**
+   * Extract fill info from the order book result.
+   * Separates counterparty fills from the placing order's own entry.
+   */
+  _extractFills(result, dbOrderId) {
     const fills = [];
 
     for (const doneOrder of result.done) {
-      if (doneOrder.id === dbOrderId) continue; // skip the new order itself
+      if (doneOrder.id === dbOrderId) continue;
       fills.push({
         matchOrderId: doneOrder.id,
-        fillPrice:    doneOrder.price,  // maker's price = execution price
-        fillQty:      doneOrder.size,   // remaining size at fill time (correct for partial→full fills)
+        fillPrice:    doneOrder.price,
+        fillQty:      doneOrder.size,
       });
     }
 
-    // result.partial has two distinct meanings from the library:
-    //   a) A COUNTERPARTY resting order that was partially consumed (new order fully filled)
-    //      → result.partial.id ≠ dbOrderId  → settle this fill
-    //   b) The NEW ORDER's own remainder resting in the book (new order partially filled counterparties)
-    //      → result.partial.id = dbOrderId  → already handled via result.done; do NOT double-settle
     if (result.partial && result.partialQuantityProcessed > 0 && result.partial.id !== dbOrderId) {
       fills.push({
         matchOrderId: result.partial.id,
@@ -132,42 +150,78 @@ class EngineService {
       });
     }
 
-    // ── Settle each fill ──────────────────────────────────────
-    const executedTrades = [];
+    return fills;
+  }
 
-    // For market buy orders: track accumulated cost to guard against slippage
-    // exceeding the locked amount. If a fill would push totalCost > lockedAmount,
-    // we skip it — the engine already matched it in memory but we don't settle it,
-    // and the corresponding funds refund happens in the route's cleanup step.
+  /**
+   * Restore a fill's liquidity to the in-memory book.
+   *
+   * The library already consumed the maker order during matching, but if we
+   * decline to settle that fill (self-trade race or slippage) the maker's DB
+   * row is still 'open' with funds locked. Re-add the consumed quantity so the
+   * book stays consistent with the database instead of silently losing it.
+   */
+  _restoreFill(fill, ctx) {
+    const makerSide = ctx.side === 'buy' ? 'sell' : 'buy';
+    try {
+      ctx.book.limit({
+        side:  makerSide,
+        id:    fill.matchOrderId,
+        size:  fill.fillQty,
+        price: fill.fillPrice,
+      });
+    } catch (err) {
+      console.warn(`[engine] Could not restore skipped liquidity for ${fill.matchOrderId}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Settle each fill against the database in its own transaction.
+   * @returns {{ executedTrades: object[], skippedQty: number }}
+   */
+  async _settleFills(fills, ctx) {
+    const executedTrades = [];
+    let skippedQty       = 0;
     let dAccumulatedCost = new Decimal(0);
-    const dLockedAmount  = lockedAmount ? new Decimal(lockedAmount) : null;
+    const dLockedAmount  = ctx.lockedAmount ? new Decimal(ctx.lockedAmount) : null;
 
     for (const fill of fills) {
-      // Fetch counterparty details from DB (user_id + original limit price for refund calc)
       const counterRes = await db.query(
         'SELECT user_id, price FROM orders WHERE id = $1',
         [fill.matchOrderId]
       );
       if (counterRes.rows.length === 0) {
-        console.error(`[engineService] Counterparty order ${fill.matchOrderId} not found in DB — skipping fill`);
+        console.error(`[engine] Counterparty order ${fill.matchOrderId} not found — skipping`);
+        skippedQty += fill.fillQty;
         continue;
       }
       const counter = counterRes.rows[0];
 
-      const isBuyerNew    = (side === 'buy');
-      const buyOrderId    = isBuyerNew ? dbOrderId        : fill.matchOrderId;
-      const sellOrderId   = isBuyerNew ? fill.matchOrderId : dbOrderId;
-      const buyerId       = isBuyerNew ? userId            : counter.user_id;
-      const sellerId      = isBuyerNew ? counter.user_id   : userId;
-      const buyLimitPrice = isBuyerNew ? price : parseFloat(counter.price);
+      // Belt-and-suspenders self-trade guard. The pre-check in placeOrder()
+      // covers limit and market orders; this is the fallback for any race the
+      // pre-check missed. We skip persistence — the trade simply does not exist
+      // — and restore the maker's liquidity so the book matches the DB.
+      if (counter.user_id === ctx.userId) {
+        console.warn(`[engine] Skipped self-trade: order ${ctx.dbOrderId} vs ${fill.matchOrderId} (user ${ctx.userId})`);
+        this._restoreFill(fill, ctx);
+        skippedQty += fill.fillQty;
+        continue;
+      }
 
-      // ── Slippage guard for market buy orders ────────────────
-      // If settling this fill would push the buyer's total spend past their
-      // locked amount, skip it — the locked amount caps the loss.
-      if (isBuyerNew && dLockedAmount && type === 'market') {
+      const isBuyerNew    = (ctx.side === 'buy');
+      const buyOrderId    = isBuyerNew ? ctx.dbOrderId     : fill.matchOrderId;
+      const sellOrderId   = isBuyerNew ? fill.matchOrderId : ctx.dbOrderId;
+      const buyerId       = isBuyerNew ? ctx.userId         : counter.user_id;
+      const sellerId      = isBuyerNew ? counter.user_id    : ctx.userId;
+      const buyLimitPrice = isBuyerNew ? ctx.price : parseFloat(counter.price);
+
+      // Slippage guard for market buy orders
+      if (isBuyerNew && dLockedAmount && ctx.type === 'market') {
         const dFillCost = new Decimal(fill.fillPrice).mul(fill.fillQty);
         if (dAccumulatedCost.plus(dFillCost).gt(dLockedAmount)) {
-          console.warn(`[engineService] Slippage guard: skipping fill — would exceed locked ${dLockedAmount} (accumulated ${dAccumulatedCost})`);
+          console.warn(`[engine] Slippage guard: skipping fill — would exceed locked ${dLockedAmount}`);
+          this._restoreFill(fill, ctx);
+          skippedQty += fill.fillQty;
           continue;
         }
         dAccumulatedCost = dAccumulatedCost.plus(dFillCost);
@@ -179,35 +233,31 @@ class EngineService {
         const trade = await db.settleFill(client, {
           buyOrderId, sellOrderId,
           buyerId, sellerId,
-          pair, baseCurrency, quoteCurrency,
-          fillPrice:    fill.fillPrice,
-          fillQty:      fill.fillQty,
+          pair: ctx.pair, baseCurrency: ctx.baseCurrency, quoteCurrency: ctx.quoteCurrency,
+          fillPrice: fill.fillPrice, fillQty: fill.fillQty,
           buyLimitPrice,
         });
         await client.query('COMMIT');
         executedTrades.push(trade);
       } catch (err) {
         await client.query('ROLLBACK');
-        console.error('[engineService] settleFill failed — rolling back fill:', err.message);
-        // Remove the order from memory to keep the book consistent with DB state
-        try { book.cancel(dbOrderId); } catch (_) {}
+        console.error('[engine] settleFill failed:', err.message);
+        try { ctx.book.cancel(ctx.dbOrderId); } catch (_) {}
         throw err;
       } finally {
         client.release();
       }
     }
 
-    return { executedTrades, quantityLeft: result.quantityLeft };
+    return { executedTrades, skippedQty };
   }
 
   /**
-   * Reloads all open and partially-filled orders from the database into memory.
-   * Call once during server startup to survive restarts without losing the book state.
+   * Reloads all open/partially-filled orders from the database into memory.
+   * Called once during server startup to survive restarts.
    */
   async recoverFromDB() {
-    // Auto-heal ghost orders (remaining_quantity = 0 but not marked filled).
-    // These are created by race conditions or pre-Decimal.js settlement bugs.
-    // Mark them filled in the DB before loading the book so they are never recovered.
+    // Auto-heal ghost orders
     await db.query(`
       UPDATE orders
          SET status = 'filled', updated_at = NOW()
@@ -220,12 +270,12 @@ class EngineService {
          FROM orders
         WHERE status IN ('open', 'partially_filled')
           AND remaining_quantity > 0
-        ORDER BY created_at ASC`  // oldest orders get time-priority
+        ORDER BY created_at ASC`
     );
 
     let loaded = 0;
     for (const order of rows) {
-      const { baseCurrency, quoteCurrency } = this._parsePair(order.pair);
+      const { baseCurrency, quoteCurrency } = parsePair(order.pair);
       const book   = this._getBook(order.pair);
       const result = book.limit({
         side:  order.side,
@@ -235,36 +285,24 @@ class EngineService {
       });
 
       if (result.err) {
-        console.error(`[engineService] Could not recover order ${order.id}: ${result.err.message}`);
+        console.error(`[engine] Could not recover order ${order.id}: ${result.err.message}`);
         continue;
       }
 
       loaded++;
 
-      // ── Settle any cross-matches that occurred during recovery ──
-      // This happens when a resting bid's price ≥ a resting ask's price
-      // (e.g. market moved after orders were placed in a previous session).
-      // We must settle these or funds stay locked and orders stay "open" in DB.
-      const fills = [];
-      for (const done of result.done) {
-        if (done.id === order.id) continue;
-        fills.push({ matchOrderId: done.id, fillPrice: done.price, fillQty: done.size });
-      }
-      // Same guard as placeOrder: skip when partial is the current order's own remainder
-      if (result.partial && result.partialQuantityProcessed > 0 && result.partial.id !== order.id) {
-        fills.push({ matchOrderId: result.partial.id, fillPrice: result.partial.price, fillQty: result.partialQuantityProcessed });
-      }
-
+      // Settle any cross-matches that occurred during recovery
+      const fills = this._extractFills(result, order.id);
       for (const fill of fills) {
         const counterRes = await db.query('SELECT user_id, price FROM orders WHERE id = $1', [fill.matchOrderId]);
         if (counterRes.rows.length === 0) continue;
         const counter = counterRes.rows[0];
 
-        const isBuyerNew  = order.side === 'buy';
-        const buyOrderId  = isBuyerNew ? order.id         : fill.matchOrderId;
-        const sellOrderId = isBuyerNew ? fill.matchOrderId : order.id;
-        const buyerId     = isBuyerNew ? order.user_id     : counter.user_id;
-        const sellerId    = isBuyerNew ? counter.user_id   : order.user_id;
+        const isBuyerNew    = order.side === 'buy';
+        const buyOrderId    = isBuyerNew ? order.id          : fill.matchOrderId;
+        const sellOrderId   = isBuyerNew ? fill.matchOrderId : order.id;
+        const buyerId       = isBuyerNew ? order.user_id     : counter.user_id;
+        const sellerId      = isBuyerNew ? counter.user_id   : order.user_id;
         const buyLimitPrice = isBuyerNew ? parseFloat(order.price) : parseFloat(counter.price);
 
         const client = await db.getClient();
@@ -276,29 +314,28 @@ class EngineService {
             fillPrice: fill.fillPrice, fillQty: fill.fillQty, buyLimitPrice,
           });
           await client.query('COMMIT');
-          console.log(`[engineService] Recovery fill settled: order ${order.id} × ${fill.matchOrderId} @ ${fill.fillPrice}`);
+          console.log(`[engine] Recovery fill: order ${order.id} x ${fill.matchOrderId} @ ${fill.fillPrice}`);
         } catch (err) {
           await client.query('ROLLBACK');
-          console.error(`[engineService] Recovery settleFill failed for ${order.id}:`, err.message);
+          console.error(`[engine] Recovery fill failed for ${order.id}:`, err.message);
         } finally {
           client.release();
         }
       }
     }
 
-    console.log(`[engineService] Recovered ${loaded} / ${rows.length} open orders from database`);
+    console.log(`[engine] Recovered ${loaded} / ${rows.length} open orders`);
   }
 
   /**
-   * Cancels an open order: removes it from memory and unlocks reserved funds.
-   * Uses a DB transaction with FOR UPDATE to prevent race conditions with concurrent fills.
+   * Cancels an open order: removes from memory and unlocks reserved funds.
+   * Uses a DB transaction with FOR UPDATE to prevent races with concurrent fills.
    */
   async cancelOrder(orderId) {
     const client = await db.getClient();
     try {
       await client.query('BEGIN');
 
-      // Lock the order row to prevent concurrent fill settlement
       const { rows } = await client.query(
         'SELECT id, user_id, pair, side, price, remaining_quantity, status FROM orders WHERE id = $1 FOR UPDATE',
         [orderId]
@@ -314,19 +351,18 @@ class EngineService {
         return { cancelled: false, orderId, reason: order.status };
       }
 
-      const { baseCurrency, quoteCurrency } = this._parsePair(order.pair);
+      const { baseCurrency, quoteCurrency } = parsePair(order.pair);
       const book = this._getBook(order.pair);
 
       try { book.cancel(orderId); } catch (_) {}
 
-      // Release the locked funds back to available (Decimal to avoid floating-point drift)
       const dRemaining   = new Decimal(order.remaining_quantity);
       const lockCurrency = order.side === 'buy' ? quoteCurrency : baseCurrency;
       const lockAmount   = order.side === 'buy'
         ? new Decimal(order.price).mul(dRemaining).toFixed(10)
         : dRemaining.toFixed(10);
 
-      // Unlock within the same transaction — use inline SQL instead of standalone unlockFunds
+      // Unlock within the same transaction
       const balRow = await client.query(
         `SELECT locked_balance FROM balances WHERE user_id = $1 AND currency = $2 FOR UPDATE`,
         [order.user_id, lockCurrency]

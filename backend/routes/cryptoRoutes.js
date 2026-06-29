@@ -1,42 +1,41 @@
-const express = require('express');
-const axios   = require('axios');
-const router  = express.Router();
+/**
+ * routes/cryptoRoutes.js — CoinMarketCap proxy with server-side caching.
+ */
 
-const CACHE_TTL_MS = 60_000; // 60 seconds
-const cache = new Map(); // key → { data, fetchedAt }
+'use strict';
 
-// GET /api/crypto/listings — Top cryptos via CoinMarketCap (cached)
+const express  = require('express');
+const axios    = require('axios');
+const config   = require('../config');
+const ApiCache = require('../utils/apiCache');
+
+const router = express.Router();
+const cache  = new ApiCache(60_000);
+
+// GET /api/crypto/listings — Top cryptos via CoinMarketCap
 router.get('/listings', async (req, res) => {
   const { convert = 'INR', limit = 50 } = req.query;
   const safeLimit = Math.min(parseInt(limit, 10) || 50, 200);
-  const key = `${convert}|${safeLimit}`;
-  const now = Date.now();
-
-  const hit = cache.get(key);
-  if (hit && now - hit.fetchedAt < CACHE_TTL_MS) {
-    res.set('X-Cache', 'HIT');
-    return res.json(hit.data);
-  }
+  const key = `cmc|${convert}|${safeLimit}`;
 
   try {
-    const { data: body } = await axios.get(
-      'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest',
-      {
-        params:  { start: 1, limit: safeLimit, convert },
-        headers: { 'X-CMC_PRO_API_KEY': process.env.COINMARKETCAP_API },
-        timeout: 8_000,
-      }
-    );
-    cache.set(key, { data: body.data, fetchedAt: now });
-    res.set('X-Cache', 'MISS');
-    return res.json(body.data);
+    const { data, cacheStatus } = await cache.wrap(key, async () => {
+      const { data: body } = await axios.get(
+        'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest',
+        {
+          params:  { start: 1, limit: safeLimit, convert },
+          headers: { 'X-CMC_PRO_API_KEY': config.coinmarketcapApiKey },
+          timeout: 8_000,
+        }
+      );
+      return body.data;
+    });
+
+    res.set('X-Cache', cacheStatus);
+    res.json(data);
   } catch (err) {
-    if (hit) {
-      res.set('X-Cache', 'STALE');
-      return res.json(hit.data);
-    }
     const status = err.response?.status ?? 500;
-    return res.status(status).json({ error: 'Failed to fetch crypto listings' });
+    res.status(status).json({ error: 'Failed to fetch crypto listings' });
   }
 });
 

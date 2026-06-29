@@ -1,7 +1,6 @@
 // frontend/src/components/TokenChart.jsx
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
-import API_URL from '../config/api';
+import client from '../api/client';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 const TokenChart = () => {
@@ -16,7 +15,7 @@ const TokenChart = () => {
     const fetchChart = async () => {
       try {
         setLoading(true);
-        const response = await axios.get(`${API_URL}/api/1inch/charts/candle/1`, {
+        const response = await client.get('/api/1inch/charts/candle/1', {
           params: {
             token0: WETH,
             token1: USDC,

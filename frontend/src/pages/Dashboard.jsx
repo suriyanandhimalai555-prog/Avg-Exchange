@@ -1,11 +1,9 @@
 // frontend/src/pages/Dashboard.jsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import axios from 'axios';
+import client, { API_URL } from '../api/client';
 import { io } from 'socket.io-client';
 import { LuArrowUpRight } from 'react-icons/lu';
-
-import API_URL from '../config/api';
 import { fetchNavbarBalance } from '../features/balanceSlice';
 import { STATIC_COINS } from '../constants/tokens';
 
@@ -43,9 +41,9 @@ const Dashboard = () => {
   const fetchData = useCallback(async () => {
     try {
       const [balRes, ordRes, trdRes] = await Promise.all([
-        axios.get(`${API_URL}/api/user/balance`, { withCredentials: true }),
-        axios.get(`${API_URL}/api/trade/orders`, { withCredentials: true }),
-        axios.get(`${API_URL}/api/trade/trades`, { withCredentials: true }),
+        client.get('/api/user/balance'),
+        client.get('/api/trade/orders'),
+        client.get('/api/trade/trades'),
       ]);
       setBalances(balRes.data ?? {});
       setOrders(ordRes.data   ?? []);
@@ -55,7 +53,7 @@ const Dashboard = () => {
 
   const fetchPrices = useCallback(async () => {
     try {
-      const { data } = await axios.get(`${API_URL}/api/markets`, {
+      const { data } = await client.get('/api/markets', {
         params: { vs_currency: 'usd', order: 'market_cap_desc', per_page: 50, page: 1 },
       });
       const map = { USDT: 1 };

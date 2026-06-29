@@ -3,37 +3,21 @@
  *
  * Opens ONE combined stream connection carrying 4 stream types for every
  * supported trading pair:
- *
- *   {sym}@ticker          → live price, 24 h stats
- *   {sym}@depth10@100ms   → top-10 order book snapshot (100 ms cadence)
- *   {sym}@trade           → every individual trade as it happens
- *   {sym}@kline_1m        → 1-minute OHLCV candles
+ *   {sym}@ticker, {sym}@depth10@100ms, {sym}@trade, {sym}@kline_1m
  *
  * Events emitted to all socket.io clients:
- *   binance:ticker  { symbol, price, open24h, high24h, low24h, volume24h, change24h, ts }
- *   binance:depth   { symbol, bids: [price,qty][], asks: [price,qty][] }
- *   binance:trade   { symbol, price, qty, isBuyerMaker, time }
- *   binance:kline   { symbol, interval, time, open, high, low, close, volume, closed }
- *
- * In-memory ticker cache is available via getTicker(symbol) / getAllTickers()
- * for REST endpoints that need the latest price without waiting for a socket event.
+ *   binance:ticker, binance:depth, binance:trade, binance:kline
  */
 
 'use strict';
 
 const WebSocket = require('ws');
+const { SYMBOLS } = require('../config/pairs');
 
-const BINANCE_WS   = 'wss://stream.binance.com:9443/stream';
-const KLINE_INTV   = '1m';
-const RECONNECT_INIT = 2_000;   // ms
-const RECONNECT_MAX  = 30_000;  // ms
-
-// All /USDT pairs the exchange supports — add more here as you list new coins.
-const SYMBOLS = [
-  'BTC', 'ETH', 'BNB', 'SOL', 'XRP',
-  'ADA', 'DOGE', 'AVAX', 'MATIC', 'DOT',
-  'LINK', 'UNI', 'ATOM', 'LTC', 'TON',
-];
+const BINANCE_WS     = 'wss://stream.binance.com:9443/stream';
+const KLINE_INTERVAL = '1m';
+const RECONNECT_INIT = 2_000;
+const RECONNECT_MAX  = 30_000;
 
 class BinanceStreamService {
   constructor() {
@@ -41,7 +25,6 @@ class BinanceStreamService {
     this._ws             = null;
     this._destroyed      = false;
     this._reconnectDelay = RECONNECT_INIT;
-    /** @type {Record<string, object>} */
     this._tickers        = {};
   }
 
@@ -52,28 +35,21 @@ class BinanceStreamService {
     return BinanceStreamService._instance;
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  // ── Public API ────────────────────────────────────────────────
 
-  /**
-   * Must be called once at server startup, after socket.io is ready.
-   * @param {import('socket.io').Server} io
-   */
   init(io) {
     this._io = io;
     this._connect();
   }
 
-  /** Returns the latest cached ticker for a symbol, or null. */
   getTicker(symbol) {
     return this._tickers[symbol] ?? null;
   }
 
-  /** Returns all cached tickers — used by GET /api/markets/live */
   getAllTickers() {
     return this._tickers;
   }
 
-  /** Graceful shutdown — stops reconnect loop and closes the socket. */
   destroy() {
     this._destroyed = true;
     if (this._ws) {
@@ -83,7 +59,7 @@ class BinanceStreamService {
     }
   }
 
-  // ── Internal ───────────────────────────────────────────────────────────────
+  // ── Internal ──────────────────────────────────────────────────
 
   _buildStreamList() {
     const streams = [];
@@ -92,7 +68,7 @@ class BinanceStreamService {
       streams.push(`${s}@ticker`);
       streams.push(`${s}@depth10@100ms`);
       streams.push(`${s}@trade`);
-      streams.push(`${s}@kline_${KLINE_INTV}`);
+      streams.push(`${s}@kline_${KLINE_INTERVAL}`);
     }
     return streams;
   }
@@ -109,15 +85,15 @@ class BinanceStreamService {
     this._ws = ws;
 
     ws.on('open', () => {
-      console.log('[binance] ✅ stream connected');
-      this._reconnectDelay = RECONNECT_INIT; // reset backoff on success
+      console.log('[binance] stream connected');
+      this._reconnectDelay = RECONNECT_INIT;
     });
 
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(raw);
         if (msg.stream && msg.data) this._dispatch(msg.stream, msg.data);
-      } catch (_) { /* ignore malformed frames */ }
+      } catch (_) {}
     });
 
     ws.on('close', (code) => {
@@ -128,7 +104,6 @@ class BinanceStreamService {
     });
 
     ws.on('error', (err) => {
-      // 'close' always fires after 'error'; we handle reconnect there
       console.error('[binance] error:', err.message);
     });
   }
@@ -143,28 +118,28 @@ class BinanceStreamService {
     const at = stream.indexOf('@');
     if (at === -1) return;
 
-    const pairRaw    = stream.slice(0, at);        // e.g. 'btcusdt'
-    const streamType = stream.slice(at + 1);        // e.g. 'ticker' | 'depth10@100ms'
+    const pairRaw    = stream.slice(0, at);
+    const streamType = stream.slice(at + 1);
 
     if (!pairRaw.endsWith('usdt')) return;
-    const symbol = pairRaw.slice(0, -4).toUpperCase(); // 'BTC'
+    const symbol = pairRaw.slice(0, -4).toUpperCase();
 
-    if (streamType === 'ticker')                this._onTicker(symbol, data);
-    else if (streamType.startsWith('depth'))    this._onDepth(symbol, data);
-    else if (streamType === 'trade')            this._onTrade(symbol, data);
-    else if (streamType.startsWith('kline'))    this._onKline(symbol, data);
+    if (streamType === 'ticker')             this._onTicker(symbol, data);
+    else if (streamType.startsWith('depth')) this._onDepth(symbol, data);
+    else if (streamType === 'trade')         this._onTrade(symbol, data);
+    else if (streamType.startsWith('kline')) this._onKline(symbol, data);
   }
 
   _onTicker(symbol, d) {
     const ticker = {
       symbol,
-      price:     parseFloat(d.c),  // last price
+      price:     parseFloat(d.c),
       open24h:   parseFloat(d.o),
       high24h:   parseFloat(d.h),
       low24h:    parseFloat(d.l),
-      volume24h: parseFloat(d.v),  // base-asset volume
-      change24h: parseFloat(d.P),  // % change
-      ts:        d.E,              // event time ms
+      volume24h: parseFloat(d.v),
+      change24h: parseFloat(d.P),
+      ts:        d.E,
     };
     this._tickers[symbol] = ticker;
     this._io?.emit('binance:ticker', ticker);
@@ -183,7 +158,7 @@ class BinanceStreamService {
       symbol,
       price:        parseFloat(d.p),
       qty:          parseFloat(d.q),
-      isBuyerMaker: d.m,  // true = sell aggressor (red), false = buy aggressor (green)
+      isBuyerMaker: d.m,
       time:         d.T,
     });
   }
@@ -193,13 +168,13 @@ class BinanceStreamService {
     this._io?.emit('binance:kline', {
       symbol,
       interval: k.i,
-      time:     k.t,  // candle open time ms
+      time:     k.t,
       open:     parseFloat(k.o),
       high:     parseFloat(k.h),
       low:      parseFloat(k.l),
       close:    parseFloat(k.c),
       volume:   parseFloat(k.v),
-      closed:   k.x,  // true when the candle period is finalized
+      closed:   k.x,
     });
   }
 }

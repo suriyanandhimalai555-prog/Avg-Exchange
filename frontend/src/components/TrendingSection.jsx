@@ -1,10 +1,9 @@
 // src/components/TrendingSection.jsx
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import client from '../api/client';
 import { motion } from 'framer-motion';
 import { trendingStyles as s } from './HomeStyles';
 import { IoFlame, IoTrendingUp, IoRocket } from 'react-icons/io5';
-import API_URL from '../config/api';
 
 const TrendingSection = () => {
   const [cryptoData, setCryptoData] = useState([]);
@@ -13,7 +12,7 @@ const TrendingSection = () => {
   useEffect(() => {
     const fetchMarketData = async () => {
       try {
-        const { data } = await axios.get(`${API_URL}/api/markets`);
+        const { data } = await client.get('/api/markets');
         if (Array.isArray(data)) setCryptoData(data);
         setLoading(false);
       } catch (err) { 

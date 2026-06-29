@@ -1,69 +1,69 @@
-const express = require('express');
-const rateLimit = require('express-rate-limit');
-const bcrypt = require('bcrypt');
-const crypto = require('crypto');
+/**
+ * routes/user.js — Authentication, profile, balance, and password routes.
+ */
+
+'use strict';
+
+const express   = require('express');
+const bcrypt    = require('bcrypt');
+const crypto    = require('crypto');
+const jwt       = require('jsonwebtoken');
 const validator = require('validator');
+const config    = require('../config');
+const db        = require('../db');
+const email     = require('../services/emailService');
+const requireAuth  = require('../middleware/requireAuth');
+const requireAdmin = require('../middleware/requireAdmin');
+const { authLimiter, otpVerifyLimiter, forgotPasswordLimiter } = require('../middleware/rateLimiters');
 const { loginUser, signupUser, verifyLoginOtp, verifySignupOtp } = require('../controllers/userController');
-const requireAuth = require('../middleware/requireAuth');
-const db = require('../db');
-const email = require('../services/emailService');
 
 const router = express.Router();
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { error: 'Too many attempts, please try again later' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// ── Auth ──────────────────────────────────────────────────────
+// ── Auth (OTP-based) ─────────────────────────────────────────────
 router.post('/login',              authLimiter, loginUser);
-router.post('/verify-login-otp',   authLimiter, verifyLoginOtp);
+router.post('/verify-login-otp',   authLimiter, otpVerifyLimiter, verifyLoginOtp);
 router.post('/signup',             authLimiter, signupUser);
-router.post('/verify-signup-otp',  authLimiter, verifySignupOtp);
+router.post('/verify-signup-otp',  authLimiter, otpVerifyLimiter, verifySignupOtp);
 
-// ── Bot / Service Account Login ───────────────────────────────
-// Machine-to-machine: skips OTP. Requires BOT_SECRET env var on both sides.
-// Never expose this endpoint to the browser.
-router.post('/bot-login', async (req, res, next) => {
-  const { email, password, botSecret } = req.body;
+// ── Bot / Service Account Login ──────────────────────────────────
+router.post('/bot-login', authLimiter, async (req, res, next) => {
+  const { email: botEmail, password, botSecret } = req.body;
 
-  if (!process.env.BOT_SECRET) {
+  if (!config.botSecret) {
     return res.status(503).json({ error: 'Bot auth not configured on this server' });
   }
-  if (!botSecret || botSecret !== process.env.BOT_SECRET) {
+  // Constant-time compare so the shared secret can't be recovered by timing.
+  const provided = Buffer.from(String(botSecret || ''));
+  const expected = Buffer.from(String(config.botSecret));
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
     return res.status(401).json({ error: 'Invalid bot secret' });
   }
 
   try {
-    const result = await db.query('SELECT * FROM "User" WHERE email = $1', [email]);
+    const result = await db.query('SELECT * FROM "User" WHERE email = $1', [botEmail]);
     const user = result.rows[0];
     if (!user || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const jwt = require('jsonwebtoken');
-    const token = jwt.sign({ id: user.id }, process.env.SECRET, { expiresIn: '30d' });
-    res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    const token = jwt.sign({ id: user.id }, config.secret, { expiresIn: config.botSessionExpiry });
+    res.cookie('token', token, { ...config.cookieDefaults, maxAge: config.botSessionMaxAge });
     res.status(200).json({ id: user.id, email: user.email, token });
   } catch (err) {
     next(err);
   }
 });
-router.post('/logout', (req, res) => {
-  res.clearCookie('token', { httpOnly: true, secure: true, sameSite: 'none' });
+
+router.post('/logout', (_req, res) => {
+  res.clearCookie('token', config.cookieDefaults);
   res.json({ success: true });
 });
 
-// ── Balances ──────────────────────────────────────────────────
-// GET /api/user/balance — returns { BTC: { available, locked }, USDT: { ... }, ... }
+// ── Balances ─────────────────────────────────────────────────────
 router.get('/balance', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      `SELECT currency, available_balance, locked_balance
-         FROM balances WHERE user_id = $1`,
+      `SELECT currency, available_balance, locked_balance FROM balances WHERE user_id = $1`,
       [req.user.id]
     );
     const balances = {};
@@ -74,14 +74,10 @@ router.get('/balance', requireAuth, async (req, res, next) => {
       };
     }
     res.json(balances);
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-// POST /api/user/deposit — credit funds (admin-only, for testing/support)
-// Body: { currency: 'USDT', amount: 1000 }
-const requireAdmin = require('../middleware/requireAdmin');
+// Admin-only credit funds (testing/support)
 router.post('/deposit', requireAuth, requireAdmin, async (req, res, next) => {
   const { currency, amount } = req.body;
   const parsed = parseFloat(amount);
@@ -99,12 +95,10 @@ router.post('/deposit', requireAuth, requireAdmin, async (req, res, next) => {
       [req.user.id, currency.toUpperCase(), parsed]
     );
     res.json({ success: true, credited: parsed, currency: currency.toUpperCase() });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-// GET /api/user/me — return full profile + KYC status
+// ── Profile ──────────────────────────────────────────────────────
 router.get('/me', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await db.query(
@@ -121,7 +115,7 @@ router.get('/me', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/user/change-password
+// ── Password ─────────────────────────────────────────────────────
 router.post('/change-password', requireAuth, async (req, res, next) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) {
@@ -145,22 +139,8 @@ router.post('/change-password', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ── Forgot Password ──────────────────────────────────────────
-const forgotLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  message: { error: 'Too many reset requests. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-const RESET_CODE_EXPIRY_MINUTES = 15;
-
-// POST /api/user/forgot-password
-// Body: { email }
-// Sends a 6-digit OTP to the user's email. Always returns 200 to avoid
-// leaking whether the email exists.
-router.post('/forgot-password', forgotLimiter, async (req, res, next) => {
+// ── Forgot Password ──────────────────────────────────────────────
+router.post('/forgot-password', forgotPasswordLimiter, async (req, res, next) => {
   const { email: userEmail } = req.body;
   if (!userEmail) return res.status(400).json({ error: 'Email is required' });
 
@@ -176,12 +156,9 @@ router.post('/forgot-password', forgotLimiter, async (req, res, next) => {
     }
 
     const user = rows[0];
-
-    // Generate a 6-digit code
     const code = crypto.randomInt(100000, 999999).toString();
-    const expiresAt = new Date(Date.now() + RESET_CODE_EXPIRY_MINUTES * 60 * 1000);
+    const expiresAt = new Date(Date.now() + config.resetCodeExpiryMinutes * 60 * 1000);
 
-    // Upsert — one active token per user
     await db.query(
       `INSERT INTO password_reset_tokens (user_id, code, expires_at, used)
        VALUES ($1, $2, $3, FALSE)
@@ -193,18 +170,12 @@ router.post('/forgot-password', forgotLimiter, async (req, res, next) => {
       [user.id, code, expiresAt]
     );
 
-    // Send email (fire-and-forget — don't block the response)
-    email.sendPasswordResetEmail(user.email, code, RESET_CODE_EXPIRY_MINUTES);
-
+    email.sendPasswordResetEmail(user.email, code, config.resetCodeExpiryMinutes);
     res.json({ success: true, message: 'If an account with that email exists, a reset code has been sent.' });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
-// POST /api/user/reset-password
-// Body: { email, code, newPassword }
-router.post('/reset-password', forgotLimiter, async (req, res, next) => {
+router.post('/reset-password', forgotPasswordLimiter, async (req, res, next) => {
   const { email: userEmail, code, newPassword } = req.body;
 
   if (!userEmail || !code || !newPassword) {
@@ -217,7 +188,6 @@ router.post('/reset-password', forgotLimiter, async (req, res, next) => {
   }
 
   try {
-    // Look up user + token in one query
     const { rows } = await db.query(
       `SELECT t.id AS token_id, t.user_id, t.code, t.expires_at, t.used
          FROM password_reset_tokens t
@@ -226,25 +196,13 @@ router.post('/reset-password', forgotLimiter, async (req, res, next) => {
       [userEmail.toLowerCase().trim()]
     );
 
-    if (rows.length === 0) {
-      return res.status(400).json({ error: 'Invalid or expired reset code' });
-    }
-
+    if (rows.length === 0)   return res.status(400).json({ error: 'Invalid or expired reset code' });
     const token = rows[0];
+    if (token.used)          return res.status(400).json({ error: 'This reset code has already been used. Please request a new one.' });
+    if (new Date() > new Date(token.expires_at)) return res.status(400).json({ error: 'Reset code has expired. Please request a new one.' });
+    if (token.code !== code.trim()) return res.status(400).json({ error: 'Invalid reset code' });
 
-    if (token.used) {
-      return res.status(400).json({ error: 'This reset code has already been used. Please request a new one.' });
-    }
-    if (new Date() > new Date(token.expires_at)) {
-      return res.status(400).json({ error: 'Reset code has expired. Please request a new one.' });
-    }
-    if (token.code !== code.trim()) {
-      return res.status(400).json({ error: 'Invalid reset code' });
-    }
-
-    // All checks passed — update password and mark token used
     const hash = await bcrypt.hash(newPassword, 10);
-
     const client = await db.getClient();
     try {
       await client.query('BEGIN');
@@ -259,9 +217,7 @@ router.post('/reset-password', forgotLimiter, async (req, res, next) => {
     }
 
     res.json({ success: true, message: 'Password has been reset successfully. You can now log in.' });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

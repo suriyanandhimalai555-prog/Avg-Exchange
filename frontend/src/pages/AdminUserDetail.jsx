@@ -1,8 +1,7 @@
 // frontend/src/pages/AdminUserDetail.jsx
 import { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import client, { API_URL } from '../api/client';
 import { useParams, useNavigate } from 'react-router-dom';
-import API_URL from '../config/api';
 import {
   LuArrowLeft, LuShield, LuShieldOff, LuCirclePlus,
   LuTriangleAlert, LuCircleCheck, LuFileText,
@@ -62,7 +61,7 @@ const AddBalanceModal = ({ userId, userName, onClose, onSuccess }) => {
     setErr('');
     setLoading(true);
     try {
-      await axios.post(`${API_URL}/api/admin/users/${userId}/add-balance`, { currency, amount }, { withCredentials: true });
+      await client.post(`/api/admin/users/${userId}/add-balance`, { currency, amount });
       onSuccess();
       onClose();
     } catch (e) {
@@ -123,7 +122,7 @@ const AdminUserDetail = () => {
   const fetchUser = useCallback(async () => {
     setError(false);
     try {
-      const { data } = await axios.get(`${API_URL}/api/admin/users/${userId}`, { withCredentials: true });
+      const { data } = await client.get(`/api/admin/users/${userId}`);
       setData(data);
     } catch (e) {
       if (e.response?.status === 404) setError('User not found');
@@ -137,7 +136,7 @@ const AdminUserDetail = () => {
     const { user } = data;
     if (!window.confirm(`${user.is_admin ? 'Remove admin from' : 'Make admin'}: ${user.name || user.email}?`)) return;
     try {
-      await axios.patch(`${API_URL}/api/admin/users/${userId}/toggle-admin`, {}, { withCredentials: true });
+      await client.patch(`/api/admin/users/${userId}/toggle-admin`);
       flash('Admin status updated');
       fetchUser();
     } catch (e) { flash(e.response?.data?.error || 'Failed', 'error'); }

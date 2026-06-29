@@ -60,12 +60,22 @@ class StaticCoinMaker {
     // 1. Cancel all current orders
     await this.orders.cancelAll();
 
-    // 2. Place buy grid: current_price → min_price
+    // 2. Fetch balances so we can skip orders we can't afford. Static coin uses
+    //    an admin-set price range, so we do NOT skew mid — only size-gate.
+    const balances = await this.orders.getBalances();
+    const [base, quote] = pair.split('/');
+
+    // 3. Place buy grid: current_price → min_price
     const buyStep  = (midPrice - minPrice) / levels;
-    // 3. Place sell grid: current_price → max_price
+    // 4. Place sell grid: current_price → max_price
     const sellStep = (maxPrice - midPrice) / levels;
 
     console.log(`[staticCoin] Placing ${levels * 2} orders…`);
+
+    let usedQuote = 0;
+    let usedBase  = 0;
+    let skippedBuys  = 0;
+    let skippedSells = 0;
 
     for (let i = 0; i < levels; i++) {
       const buyPrice  = midPrice - (i + 1) * buyStep;
@@ -75,8 +85,31 @@ class StaticCoinMaker {
       const buyQty  = (orderValue / buyPrice)  * (0.6 + Math.random() * 0.8);
       const sellQty = (orderValue / sellPrice) * (0.6 + Math.random() * 0.8);
 
-      if (buyPrice  > minPrice)  await this.orders.place('buy',  buyPrice,  buyQty);
-      if (sellPrice < maxPrice)  await this.orders.place('sell', sellPrice, sellQty);
+      if (buyPrice > minPrice) {
+        const buyCost = buyPrice * buyQty;
+        if (!balances || (balances.quote - usedQuote) >= buyCost) {
+          await this.orders.place('buy', buyPrice, buyQty);
+          if (balances) usedQuote += buyCost;
+        } else {
+          skippedBuys++;
+        }
+      }
+
+      if (sellPrice < maxPrice) {
+        if (!balances || (balances.base - usedBase) >= sellQty) {
+          await this.orders.place('sell', sellPrice, sellQty);
+          if (balances) usedBase += sellQty;
+        } else {
+          skippedSells++;
+        }
+      }
+    }
+
+    if (skippedBuys > 0) {
+      console.log(`  [BUY] ${skippedBuys} level(s) skipped — low ${quote} (available: ${(balances.quote - usedQuote).toFixed(2)})`);
+    }
+    if (skippedSells > 0) {
+      console.log(`  [SELL] ${skippedSells} level(s) skipped — low ${base} (available: ${(balances.base - usedBase).toFixed(6)})`);
     }
 
     console.log(`[staticCoin] ${this.orders.orderCount} resting orders`);

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import { Link } from 'react-router-dom';
+import client from '../api/client';
 import {
   IoShieldCheckmarkOutline,
   IoDocumentTextOutline,
@@ -14,7 +15,6 @@ import {
   IoPeopleOutline,
   IoCopyOutline,
 } from 'react-icons/io5';
-import API_URL from '../config/api';
 
 const Account = () => {
   const { user } = useSelector((state) => state.auth);
@@ -42,9 +42,8 @@ const Account = () => {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API_URL}/api/kyc/status`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => {
+    client.get('/api/kyc/status')
+      .then(({ data }) => {
         setKycStatus(data.status ?? 'none');
         setKycNote(data.reviewer_note ?? '');
       })
@@ -60,14 +59,14 @@ const Account = () => {
 
     setLoading(true);
     try {
-      const urlRes = await fetch(
-        `${API_URL}/api/kyc/upload-url?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type)}`,
-        { credentials: 'include' }
-      );
-      const { uploadUrl, key, error: urlErr } = await urlRes.json();
-      if (!urlRes.ok) throw new Error(urlErr || 'Failed to get upload URL');
+      const { data: urlData } = await client.get('/api/kyc/upload-url', {
+        params: { filename: file.name, contentType: file.type },
+      });
+      const { uploadUrl, key } = urlData;
+      if (!uploadUrl) throw new Error('Failed to get upload URL');
 
       setUploadProgress(10);
+      // Direct PUT to S3 pre-signed URL — no auth header, intentional
       const uploadRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
@@ -76,23 +75,16 @@ const Account = () => {
       if (!uploadRes.ok) throw new Error('File upload failed');
       setUploadProgress(80);
 
-      const submitRes = await fetch(`${API_URL}/api/kyc/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          full_name: fullName, date_of_birth: dob,
-          document_type: documentType, document_number: documentNumber,
-          document_key: key,
-        }),
+      await client.post('/api/kyc/submit', {
+        full_name: fullName, date_of_birth: dob,
+        document_type: documentType, document_number: documentNumber,
+        document_key: key,
       });
-      const data = await submitRes.json();
-      if (!submitRes.ok) throw new Error(data.error || 'Submission failed');
 
       setUploadProgress(100);
       setKycStatus('pending');
     } catch (err) {
-      setError(err.message || 'Submission failed. Please try again.');
+      setError(err.response?.data?.error || err.message || 'Submission failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -104,17 +96,14 @@ const Account = () => {
     if (pwNew !== pwConfirm) { setPwError('New passwords do not match'); return; }
     setPwLoading(true);
     try {
-      const res = await fetch(`${API_URL}/api/user/change-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ currentPassword: pwCurrent, newPassword: pwNew }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setPwError(data.error || 'Failed to change password'); }
-      else { setPwSuccess(true); setPwCurrent(''); setPwNew(''); setPwConfirm(''); }
-    } catch { setPwError('Network error. Please try again.'); }
-    finally { setPwLoading(false); }
+      await client.post('/api/user/change-password',
+        { currentPassword: pwCurrent, newPassword: pwNew }
+      );
+      setPwSuccess(true);
+      setPwCurrent(''); setPwNew(''); setPwConfirm('');
+    } catch (err) {
+      setPwError(err.response?.data?.error || 'Failed to change password');
+    } finally { setPwLoading(false); }
   };
 
   const copyReferral = () => {

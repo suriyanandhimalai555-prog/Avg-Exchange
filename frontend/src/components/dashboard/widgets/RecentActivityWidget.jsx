@@ -5,10 +5,9 @@
 //   trades    {array}    — all trades for this user
 //   userId    {number}   — to determine buy/sell role in a trade
 //   onRefresh {function} — called after cancel so parent re-fetches
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
-import API_URL from '../../../config/api';
+import client from '../../../api/client';
 import { LuExternalLink } from 'react-icons/lu';
 
 const TABS = ['Open Orders', 'Trade History'];
@@ -62,7 +61,7 @@ const RecentActivityWidget = ({ orders, trades, userId, onRefresh }) => {
   const handleCancel = async (id) => {
     setCancellingId(id);
     try {
-      await axios.delete(`${API_URL}/api/trade/order/${id}`, { withCredentials: true });
+      await client.delete(`/api/trade/order/${id}`);
       onRefresh?.();
     } catch (_) { /* silently ignore */ }
     finally { setCancellingId(null); }
