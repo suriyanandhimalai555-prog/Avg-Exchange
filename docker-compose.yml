@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    container_name: avgexchange-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "4010:4010"
+
+  frontend:
+    build: ./frontend
+    container_name: avgexchange-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3005:80"
+
+  bot:
+    build: ./bot
+    container_name: avgexchange-bot
+    restart: unless-stopped
+    depends_on:
+      - backend
+    env_file:
+      - ./bot/.env
