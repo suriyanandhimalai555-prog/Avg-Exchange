@@ -25,7 +25,7 @@ const steps = [
     id: "02",
     icon: <IoWallet />,
     title: "Fund Wallet",
-    desc: "Connect your bank or transfer crypto. We support 50+ fiat currencies globally.",
+    desc: "Deposit crypto directly to your wallet. We support BTC, ETH, SOL, and 12 more assets via our secure payment gateway.",
     colors: {
       shadow: "hover:shadow-purple-500/20",
       border: "hover:border-purple-500/50",

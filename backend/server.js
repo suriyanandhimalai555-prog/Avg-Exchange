@@ -32,6 +32,7 @@ const tradeRoutes   = require('./routes/tradeRoutes');
 const kycRoutes     = require('./routes/kycRoutes');
 const adminRoutes   = require('./routes/adminRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
+const cmcRoutes     = require('./routes/cmcRoutes');
 
 // Background jobs
 const staleBotPurge        = require('./jobs/staleBotPurge');
@@ -95,6 +96,7 @@ app.use('/api/kyc',      kycRoutes);
 app.use('/api/admin',    adminRoutes);
 app.use('/api/payment',  paymentRoutes);
 app.use('/api/trending', marketRoutes); // backwards-compatible alias
+app.use('/api/cmc',      cmcRoutes);    // CoinMarketCap-spec public market data
 
 app.use(errorHandler);
 

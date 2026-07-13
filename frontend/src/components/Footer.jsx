@@ -12,7 +12,7 @@ const Footer = () => {
           <div className={s.brandCol}>
             <span className={s.logoText}>AVG Exchange</span>
             <p className={s.desc}>
-              The world's most trusted cryptocurrency exchange. Buy, trade, and hold 350+ cryptocurrencies with the lowest fees in the industry.
+              A fast, secure cryptocurrency spot exchange. Trade 15 digital assets against USDT with zero trading fees and full KYC compliance.
             </p>
           </div>
 
@@ -30,9 +30,9 @@ const Footer = () => {
             <h4 className={s.colTitle}>Products</h4>
             <div className={s.linkList}>
               <a href="#" className={s.link}>Spot Trading</a>
-              <a href="#" className={s.link}>Margin Trading</a>
-              <a href="#" className={s.link}>AVG Earn</a>
+              <a href="#" className={s.link}>Markets</a>
               <a href="#" className={s.link}>Wallet</a>
+              <a href="#" className={s.link}>Referrals</a>
             </div>
           </div>
 

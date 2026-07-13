@@ -190,3 +190,28 @@ CREATE TABLE IF NOT EXISTS otp_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_otp_email_type ON otp_tokens(email, type);
+
+-- ── bot_rebalance_log ─────────────────────────────────────────
+-- Audit trail for the market-maker inventory rebalancer. Every synthetic
+-- coin<->USDT conversion (done at mark price via a direct balance update,
+-- NOT through the order book) records one row here. Real deposits exist,
+-- so each conversion must be traceable.
+CREATE TABLE IF NOT EXISTS bot_rebalance_log (
+  id         SERIAL         PRIMARY KEY,
+  currency   VARCHAR(20)    NOT NULL,
+  action     VARCHAR(4)     NOT NULL,           -- 'sell' | 'buy'
+  coin_qty   NUMERIC(28,10) NOT NULL,
+  mark_price NUMERIC(28,10) NOT NULL,
+  usdt_delta NUMERIC(28,10) NOT NULL,           -- +ve = USDT credited, -ve = spent
+  created_at TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT bot_rebalance_action_check CHECK (action IN ('sell', 'buy'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_rebalance_created ON bot_rebalance_log(created_at);
+
+-- ── CMC market-data index (migration) ────────────────────────
+-- Composite index for DISTINCT ON (pair) ... ORDER BY pair, executed_at DESC
+-- used by getLastPrices(), and for the correlated subquery in get24hStats().
+-- Eliminates heap sorts on the trades table for every /api/cmc/* request.
+CREATE INDEX IF NOT EXISTS idx_trades_pair_time ON trades(pair, executed_at DESC);

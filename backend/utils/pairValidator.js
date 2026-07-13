@@ -29,7 +29,9 @@ const isValidPair = async (pair) => {
     );
     _staticCoinPair  = rows[0] ? `${rows[0].symbol}/USDT` : null;
     _staticCoinFetch = now;
-  } catch (_) {}
+  } catch (err) {
+    throw err;
+  }
 
   return pair === _staticCoinPair;
 };

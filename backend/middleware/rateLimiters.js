@@ -70,6 +70,18 @@ const invoiceLimiter = rateLimit({
   keyGenerator: userKeyGenerator,
 });
 
+// IP-keyed limiter for public CMC market-data endpoints.
+// 120 req/min is well above any legitimate CMC crawler frequency while
+// blocking callers who rotate cache-busting query params to hammer the DB.
+const cmcLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  message: { error: 'Rate limit exceeded — max 120 requests per minute' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // No keyGenerator override: defaults to IP address
+});
+
 module.exports = {
   authLimiter,
   otpVerifyLimiter,
@@ -77,4 +89,5 @@ module.exports = {
   orderLimiter,
   cancelLimiter,
   invoiceLimiter,
+  cmcLimiter,
 };

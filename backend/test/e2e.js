@@ -176,6 +176,87 @@ async function runTests() {
   ok('Insufficient funds rejected', insufficientFunds.status === 400,
     insufficientFunds.data?.error);
 
+  // ── 9. CMC public endpoints ────────────────────────────────────────────────
+  console.log('\n9. CMC market-data endpoints (public, unauthenticated)');
+
+  const pub = makeClient(); // no auth cookie
+
+  // /summary
+  const summaryRes = await pub.get('/api/cmc/summary');
+  ok('GET /cmc/summary → 200', summaryRes.status === 200, `got ${summaryRes.status}`);
+  ok('/cmc/summary returns an array', Array.isArray(summaryRes.data));
+  if (Array.isArray(summaryRes.data) && summaryRes.data.length > 0) {
+    const s = summaryRes.data[0];
+    ok('/cmc/summary entry has trading_pairs', typeof s.trading_pairs === 'string',
+      JSON.stringify(s));
+    ok('/cmc/summary entry has last_price (number)', typeof s.last_price === 'number',
+      `got ${typeof s.last_price}`);
+    ok('/cmc/summary entry has base_volume (number)', typeof s.base_volume === 'number',
+      `got ${typeof s.base_volume}`);
+    ok('/cmc/summary has 15 pairs', summaryRes.data.length === 15,
+      `got ${summaryRes.data.length}`);
+  }
+
+  // /assets
+  const assetsRes = await pub.get('/api/cmc/assets');
+  ok('GET /cmc/assets → 200', assetsRes.status === 200, `got ${assetsRes.status}`);
+  ok('/cmc/assets has BTC entry', typeof assetsRes.data?.BTC === 'object');
+  ok('/cmc/assets BTC.can_withdraw === false', assetsRes.data?.BTC?.can_withdraw === false,
+    `got ${assetsRes.data?.BTC?.can_withdraw}`);
+  ok('/cmc/assets BTC.unified_cryptoasset_id === 1',
+    assetsRes.data?.BTC?.unified_cryptoasset_id === 1,
+    `got ${assetsRes.data?.BTC?.unified_cryptoasset_id}`);
+  ok('/cmc/assets USDT.can_deposit === true', assetsRes.data?.USDT?.can_deposit === true,
+    'USDT is in DEPOSIT_NETWORKS (TRX/ETH/BSC networks)');
+
+  // /ticker
+  const tickerRes = await pub.get('/api/cmc/ticker');
+  ok('GET /cmc/ticker → 200', tickerRes.status === 200, `got ${tickerRes.status}`);
+  ok('/cmc/ticker has BTC_USDT entry', typeof tickerRes.data?.BTC_USDT === 'object');
+  if (tickerRes.data?.BTC_USDT) {
+    ok('/cmc/ticker BTC_USDT has isFrozen field', 'isFrozen' in tickerRes.data.BTC_USDT,
+      JSON.stringify(tickerRes.data.BTC_USDT));
+    ok('/cmc/ticker BTC_USDT.base_id is a number',
+      typeof tickerRes.data.BTC_USDT.base_id === 'number');
+    ok('/cmc/ticker BTC_USDT.quote_id === 825',
+      tickerRes.data.BTC_USDT.quote_id === 825,
+      `got ${tickerRes.data.BTC_USDT.quote_id}`);
+  }
+
+  // /orderbook/:pair
+  const bookRes = await pub.get('/api/cmc/orderbook/BTC_USDT');
+  ok('GET /cmc/orderbook/BTC_USDT → 200', bookRes.status === 200, `got ${bookRes.status}`);
+  ok('/cmc/orderbook has bids array', Array.isArray(bookRes.data?.bids));
+  ok('/cmc/orderbook has asks array', Array.isArray(bookRes.data?.asks));
+  ok('/cmc/orderbook has timestamp (number)', typeof bookRes.data?.timestamp === 'number');
+
+  // /trades/:pair
+  const tradesRes = await pub.get('/api/cmc/trades/BTC_USDT');
+  ok('GET /cmc/trades/BTC_USDT → 200', tradesRes.status === 200, `got ${tradesRes.status}`);
+  ok('/cmc/trades returns an array', Array.isArray(tradesRes.data));
+  if (Array.isArray(tradesRes.data) && tradesRes.data.length > 0) {
+    const t = tradesRes.data[0];
+    ok('/cmc/trades entry has trade_id', typeof t.trade_id === 'number');
+    ok('/cmc/trades entry has type (buy|sell)',
+      t.type === 'buy' || t.type === 'sell', `got ${t.type}`);
+  }
+
+  // Bad pair → 400
+  const badPair = await pub.get('/api/cmc/orderbook/FAKE_USDT');
+  ok('Invalid pair /cmc/orderbook/FAKE_USDT → 400', badPair.status === 400,
+    `got ${badPair.status}`);
+  ok('Invalid pair error has error field', typeof badPair.data?.error === 'string');
+
+  const badTrades = await pub.get('/api/cmc/trades/FAKE_USDT');
+  ok('Invalid pair /cmc/trades/FAKE_USDT → 400', badTrades.status === 400,
+    `got ${badTrades.status}`);
+
+  // Cache hit — second call within 60 s should return X-Cache: HIT
+  const summary2 = await pub.get('/api/cmc/summary');
+  ok('/cmc/summary second call → X-Cache: HIT',
+    summary2.headers['x-cache'] === 'HIT',
+    `got x-cache: ${summary2.headers['x-cache']}`);
+
   finish();
 }
 

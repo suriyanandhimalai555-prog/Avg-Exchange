@@ -8,12 +8,12 @@ const features = [
   {
     icon: <IoShieldCheckmarkOutline size={32} />,
     title: "Bank-Grade Security",
-    desc: "We use cold storage, multi-sig wallets, and real-time monitoring to ensure your funds are never compromised."
+    desc: "Your funds are protected with JWT authentication, 2FA, encrypted credentials, rate limiting, and admin-controlled withdrawal approval."
   },
   {
     icon: <IoFlashOutline size={32} />,
     title: "Lightning Fast Engine",
-    desc: "Our matching engine handles 100,000+ TPS with less than 1ms latency, ensuring your orders execute instantly."
+    desc: "Our in-house matching engine processes orders with sub-millisecond precision, supporting high concurrency without double-spending."
   },
   {
     icon: <IoHeadsetOutline size={32} />,
