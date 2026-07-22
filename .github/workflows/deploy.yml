@@ -11,14 +11,22 @@ jobs:
 
     steps:
       - name: Deploy to Contabo VPS
-        uses: appleboy/ssh-action@v1.2.0
-
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          timeout: 60s
+          command_timeout: 20m
 
           script: |
+            set -e
+
+            echo "========================================"
+            echo "Deploying Avg Exchange"
+            echo "========================================"
+
             cd /root/otp/apps/Avg-Exchange
 
             git pull origin main
@@ -29,4 +37,116 @@ jobs:
 
             docker compose up -d
 
-            docker image prune -f
+            docker image prune -af
+
+            docker compose ps
+
+            docker ps
+
+            echo "Deployment Completed Successfully"
+
+      - name: Send Success Email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+
+          subject: "✅ Avg Exchange Deployment Successful"
+
+          from: ${{ secrets.SMTP_USERNAME }}
+
+          to: |
+            Sanjayvanan03@gmail.com,
+            muthukdm45@gmail.com,
+            deepakavgprimetech@gmail.com
+
+          html_body: |
+            <h2>✅ Avg Exchange Deployment Successful</h2>
+
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;">
+              <tr>
+                <td><b>Repository</b></td>
+                <td>${{ github.repository }}</td>
+              </tr>
+              <tr>
+                <td><b>Branch</b></td>
+                <td>${{ github.ref_name }}</td>
+              </tr>
+              <tr>
+                <td><b>Commit ID</b></td>
+                <td>${{ github.sha }}</td>
+              </tr>
+              <tr>
+                <td><b>Developer</b></td>
+                <td>${{ github.actor }}</td>
+              </tr>
+              <tr>
+                <td><b>Workflow</b></td>
+                <td>${{ github.workflow }}</td>
+              </tr>
+              <tr>
+                <td><b>Status</b></td>
+                <td>Deployment Successful ✅</td>
+              </tr>
+            </table>
+
+            <br>
+
+            <b>The latest version of Avg Exchange has been deployed successfully to the Contabo VPS.</b>
+
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+
+          subject: "❌ Avg Exchange Deployment Failed"
+
+          from: ${{ secrets.SMTP_USERNAME }}
+
+          to: |
+            Sanjayvanan03@gmail.com,
+            muthukdm45@gmail.com,
+            deepakavgprimetech@gmail.com
+
+          html_body: |
+            <h2>❌ Avg Exchange Deployment Failed</h2>
+
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;">
+              <tr>
+                <td><b>Repository</b></td>
+                <td>${{ github.repository }}</td>
+              </tr>
+              <tr>
+                <td><b>Branch</b></td>
+                <td>${{ github.ref_name }}</td>
+              </tr>
+              <tr>
+                <td><b>Commit ID</b></td>
+                <td>${{ github.sha }}</td>
+              </tr>
+              <tr>
+                <td><b>Developer</b></td>
+                <td>${{ github.actor }}</td>
+              </tr>
+              <tr>
+                <td><b>Workflow</b></td>
+                <td>${{ github.workflow }}</td>
+              </tr>
+              <tr>
+                <td><b>Status</b></td>
+                <td>Deployment Failed ❌</td>
+              </tr>
+            </table>
+
+            <br>
+
+            <b>Please check the GitHub Actions logs for the deployment failure.</b>
