@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avgexchange-backend
+  namespace: avgexchange
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: avgexchange-backend
+  template:
+    metadata:
+      labels:
+        app: avgexchange-backend
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: backend
+          image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4010
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: avgexchange-backend-secret
+          readinessProbe:
+            tcpSocket:
+              port: 4010
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 4010
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: avgexchange-backend
+  namespace: avgexchange
+spec:
+  selector:
+    app: avgexchange-backend
+  ports:
+    - name: http
+      port: 4010
+      targetPort: 4010
+      protocol: TCP
+  type: ClusterIP

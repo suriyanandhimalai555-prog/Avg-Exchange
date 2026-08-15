@@ -1,0 +1,68 @@
+name: Build and Push Avg Exchange Images
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.sha }}
+
+      - name: Build and Push Frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:latest
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.sha }}
+
+      - name: Build and Push Bot
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bot
+          push: true
+          tags: |
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:latest
+            ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.sha }}
+
+      - name: Verify Images
+        run: |
+          echo "======================================"
+          echo "GHCR Images"
+          echo "======================================"
+          echo "Backend:"
+          echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.sha }}"
+          echo
+          echo "Frontend:"
+          echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.sha }}"
+          echo
+          echo "Bot:"
+          echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.sha }}"

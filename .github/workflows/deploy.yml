@@ -1,56 +1,27 @@
-name: Deploy Avg Exchange
+name: Deploy Avg Exchange Kubernetes
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - Build and Push Avg Exchange Images
+    types:
+      - completed
     branches:
       - main
 
 jobs:
   deploy:
-    name: Deploy to AWS VPS
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    name: Deploy to Kubernetes
     runs-on: ubuntu-latest
 
     steps:
 
-      # ========================================
-      # 1. Checkout Repository
-      # ========================================
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ========================================
-      # 2. Verify Required Secrets
-      # ========================================
-      - name: Verify Deployment Configuration
-        run: |
-          echo "========================================"
-          echo "Avg Exchange Deployment"
-          echo "========================================"
-
-          if [ -z "${{ secrets.VPS_HOST }}" ]; then
-            echo "ERROR: VPS_HOST secret is missing"
-            exit 1
-          fi
-
-          if [ -z "${{ secrets.VPS_USER }}" ]; then
-            echo "ERROR: VPS_USER secret is missing"
-            exit 1
-          fi
-
-          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
-            echo "ERROR: VPS_SSH_KEY secret is missing"
-            exit 1
-          fi
-
-          echo "AWS VPS Host: configured"
-          echo "AWS VPS User: configured"
-          echo "SSH Key: configured"
-          echo "Deployment configuration looks good"
-
-      # ========================================
-      # 3. Deploy to AWS VPS
-      # ========================================
-      - name: Deploy to AWS VPS
+      - name: Deploy to Kubernetes
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -59,112 +30,73 @@ jobs:
           port: 22
           timeout: 60s
           command_timeout: 20m
-          debug: false
 
           script: |
             set -e
 
             echo "========================================"
-            echo "Starting Avg Exchange Deployment"
-            echo "========================================"
-
-            echo "Server:"
-            hostname
-
-            echo "User:"
-            whoami
-
-            echo "Current directory:"
-            pwd
-
-            echo "========================================"
-            echo "Changing to application directory"
+            echo "Deploying Avg Exchange to Kubernetes"
             echo "========================================"
 
             cd /home/ubuntu/Applications/Avg-Exchange
 
-            echo "Application directory:"
-            pwd
-
-            echo "========================================"
-            echo "Updating source code"
-            echo "========================================"
-
+            echo "===== GIT ====="
             git fetch origin main
             git reset --hard origin/main
 
-            echo "Current commit:"
-            git rev-parse --short HEAD
+            echo "===== NAMESPACE ====="
+            kubectl get namespace avgexchange
+
+            echo "===== GHCR SECRET ====="
+            kubectl get secret ghcr-secret -n avgexchange
+
+            echo "===== APPLY KUBERNETES MANIFESTS ====="
+            kubectl apply -f k8s/backend.yaml
+            kubectl apply -f k8s/frontend.yaml
+            kubectl apply -f k8s/bot.yaml
+            kubectl apply -f k8s/ingress.yaml
+
+            echo "===== UPDATE IMAGES ====="
+
+            kubectl set image deployment/avgexchange-backend \
+              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.event.workflow_run.head_sha }} \
+              -n avgexchange
+
+            kubectl set image deployment/avgexchange-frontend \
+              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.event.workflow_run.head_sha }} \
+              -n avgexchange
+
+            kubectl set image deployment/avgexchange-bot \
+              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.event.workflow_run.head_sha }} \
+              -n avgexchange
+
+            echo "===== WAIT FOR ROLLOUT ====="
+
+            kubectl rollout status deployment/avgexchange-backend \
+              -n avgexchange \
+              --timeout=300s
+
+            kubectl rollout status deployment/avgexchange-frontend \
+              -n avgexchange \
+              --timeout=300s
+
+            kubectl rollout status deployment/avgexchange-bot \
+              -n avgexchange \
+              --timeout=300s
+
+            echo "===== PODS ====="
+            kubectl get pods -n avgexchange -o wide
+
+            echo "===== SERVICES ====="
+            kubectl get svc -n avgexchange
+
+            echo "===== INGRESS ====="
+            kubectl get ingress -n avgexchange
 
             echo "========================================"
-            echo "Stopping existing containers"
+            echo "Kubernetes Deployment Successful"
             echo "========================================"
 
-            docker compose down
-
-            echo "========================================"
-            echo "Building Docker images"
-            echo "========================================"
-
-            docker compose build --no-cache
-
-            echo "========================================"
-            echo "Starting Docker containers"
-            echo "========================================"
-
-            docker compose up -d
-
-            echo "========================================"
-            echo "Waiting for containers"
-            echo "========================================"
-
-            sleep 10
-
-            echo "========================================"
-            echo "Docker Compose Status"
-            echo "========================================"
-
-            docker compose ps
-
-            echo "========================================"
-            echo "Docker Container Status"
-            echo "========================================"
-
-            docker ps
-
-            echo "========================================"
-            echo "Backend Health Check"
-            echo "========================================"
-
-            if curl -fsS http://127.0.0.1:4010/api/markets > /dev/null; then
-              echo "Backend API is healthy"
-            else
-              echo "ERROR: Backend API health check failed"
-              echo "Backend logs:"
-              docker compose logs --tail=100 backend
-              exit 1
-            fi
-
-            echo "========================================"
-            echo "Frontend Check"
-            echo "========================================"
-
-            if curl -fsS http://127.0.0.1:3005 > /dev/null; then
-              echo "Frontend is healthy"
-            else
-              echo "ERROR: Frontend health check failed"
-              echo "Frontend logs:"
-              docker compose logs --tail=100 frontend
-              exit 1
-            fi
-
-            echo "========================================"
-            echo "Deployment Completed Successfully"
-            echo "========================================"
-
-      # ========================================
-      # 4. Send Success Email
-      # ========================================
       - name: Send Success Email
         if: success()
         uses: dawidd6/action-send-mail@v3
@@ -177,7 +109,7 @@ jobs:
 
           from: ${{ secrets.SMTP_USERNAME }}
 
-          subject: "✅ Avg Exchange Deployment Successful"
+          subject: "✅ Avg Exchange Kubernetes Deployment Successful"
 
           to: |
             Sanjayvanan03@gmail.com,
@@ -185,49 +117,39 @@ jobs:
             deepakavgprimetech@gmail.com
 
           html_body: |
-            <h2>✅ Avg Exchange Deployment Successful</h2>
+            <h2>✅ Avg Exchange Kubernetes Deployment Successful</h2>
 
             <table border="1" cellpadding="8" cellspacing="0"
                    style="border-collapse:collapse;">
 
               <tr>
                 <td><b>Repository</b></td>
-                <td>${{ github.repository }}</td>
+                <td>${{ github.event.workflow_run.repository.full_name }}</td>
               </tr>
 
               <tr>
                 <td><b>Branch</b></td>
-                <td>${{ github.ref_name }}</td>
+                <td>main</td>
               </tr>
 
               <tr>
                 <td><b>Commit</b></td>
-                <td>${{ github.sha }}</td>
+                <td>${{ github.event.workflow_run.head_sha }}</td>
               </tr>
 
               <tr>
-                <td><b>Developer</b></td>
-                <td>${{ github.actor }}</td>
+                <td><b>Deployment</b></td>
+                <td>Kubernetes / k3s</td>
               </tr>
 
               <tr>
-                <td><b>Workflow</b></td>
-                <td>${{ github.workflow }}</td>
+                <td><b>Namespace</b></td>
+                <td>avgexchange</td>
               </tr>
 
               <tr>
-                <td><b>Server</b></td>
-                <td>AWS VPS</td>
-              </tr>
-
-              <tr>
-                <td><b>Backend</b></td>
-                <td>Docker :4010</td>
-              </tr>
-
-              <tr>
-                <td><b>Frontend</b></td>
-                <td>Docker :3005</td>
+                <td><b>Domain</b></td>
+                <td>avgexchange.io</td>
               </tr>
 
               <tr>
@@ -237,9 +159,6 @@ jobs:
 
             </table>
 
-      # ========================================
-      # 5. Send Failure Email
-      # ========================================
       - name: Send Failure Email
         if: failure()
         uses: dawidd6/action-send-mail@v3
@@ -252,7 +171,7 @@ jobs:
 
           from: ${{ secrets.SMTP_USERNAME }}
 
-          subject: "❌ Avg Exchange Deployment Failed"
+          subject: "❌ Avg Exchange Kubernetes Deployment Failed"
 
           to: |
             Sanjayvanan03@gmail.com,
@@ -260,39 +179,39 @@ jobs:
             deepakavgprimetech@gmail.com
 
           html_body: |
-            <h2>❌ Avg Exchange Deployment Failed</h2>
+            <h2>❌ Avg Exchange Kubernetes Deployment Failed</h2>
 
             <table border="1" cellpadding="8" cellspacing="0"
                    style="border-collapse:collapse;">
 
               <tr>
                 <td><b>Repository</b></td>
-                <td>${{ github.repository }}</td>
+                <td>${{ github.event.workflow_run.repository.full_name }}</td>
               </tr>
 
               <tr>
                 <td><b>Branch</b></td>
-                <td>${{ github.ref_name }}</td>
+                <td>main</td>
               </tr>
 
               <tr>
                 <td><b>Commit</b></td>
-                <td>${{ github.sha }}</td>
+                <td>${{ github.event.workflow_run.head_sha }}</td>
               </tr>
 
               <tr>
-                <td><b>Developer</b></td>
-                <td>${{ github.actor }}</td>
+                <td><b>Deployment</b></td>
+                <td>Kubernetes / k3s</td>
               </tr>
 
               <tr>
-                <td><b>Workflow</b></td>
-                <td>${{ github.workflow }}</td>
+                <td><b>Namespace</b></td>
+                <td>avgexchange</td>
               </tr>
 
               <tr>
-                <td><b>Server</b></td>
-                <td>AWS VPS</td>
+                <td><b>Domain</b></td>
+                <td>avgexchange.io</td>
               </tr>
 
               <tr>
@@ -304,4 +223,4 @@ jobs:
 
             <br>
 
-            <b>Please check the GitHub Actions deployment logs.</b>
+            <b>Please check GitHub Actions deployment logs.</b>
