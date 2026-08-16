@@ -5,36 +5,69 @@ metadata:
   namespace: avgexchange
 spec:
   replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  minReadySeconds: 10
+  progressDeadlineSeconds: 600
+
   selector:
     matchLabels:
       app: avgexchange-backend
+
   template:
     metadata:
       labels:
         app: avgexchange-backend
+
     spec:
+      terminationGracePeriodSeconds: 30
+
       imagePullSecrets:
         - name: ghcr-secret
+
       containers:
         - name: backend
-          image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest
+          image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:3de0f1d9e83123b5064381e18c2f814ddf416732
           imagePullPolicy: Always
+
           ports:
-            - containerPort: 4010
+            - name: http
+              containerPort: 4010
               protocol: TCP
+
           envFrom:
             - secretRef:
                 name: avgexchange-backend-secret
-          readinessProbe:
-            tcpSocket:
-              port: 4010
-            initialDelaySeconds: 10
-            periodSeconds: 10
-          livenessProbe:
+
+          startupProbe:
             tcpSocket:
               port: 4010
             initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 60
+
+          readinessProbe:
+            tcpSocket:
+              port: 4010
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+
+          livenessProbe:
+            tcpSocket:
+              port: 4010
             periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+            successThreshold: 1
+
           resources:
             requests:
               cpu: 100m
@@ -49,12 +82,15 @@ kind: Service
 metadata:
   name: avgexchange-backend
   namespace: avgexchange
+
 spec:
   selector:
     app: avgexchange-backend
+
   ports:
     - name: http
       port: 4010
       targetPort: 4010
       protocol: TCP
+
   type: ClusterIP
