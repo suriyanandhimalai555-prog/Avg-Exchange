@@ -9,6 +9,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
@@ -17,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
@@ -28,74 +30,79 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
-          timeout: 60s
-          command_timeout: 20m
+
+          timeout: 30s
+          command_timeout: 120s
 
           script: |
             set -e
 
             echo "========================================"
-            echo "Deploying Avg Exchange to Kubernetes"
+            echo "AVG EXCHANGE KUBERNETES DEPLOYMENT"
             echo "========================================"
 
             cd /home/ubuntu/Applications/Avg-Exchange
 
-            echo "===== GIT ====="
-            git fetch origin main
-            git reset --hard origin/main
+            SHA="${{ github.event.workflow_run.head_sha }}"
 
-            echo "===== NAMESPACE ====="
+            echo "Commit: $SHA"
+
+            echo "===== GIT ====="
+            git fetch origin main --quiet
+            git reset --hard origin/main --quiet
+
+            echo "===== VERIFY NAMESPACE ====="
             kubectl get namespace avgexchange
 
-            echo "===== GHCR SECRET ====="
-            kubectl get secret ghcr-secret -n avgexchange
-
-            echo "===== APPLY KUBERNETES MANIFESTS ====="
+            echo "===== APPLY MANIFESTS ====="
             kubectl apply -f k8s/backend.yaml
             kubectl apply -f k8s/frontend.yaml
             kubectl apply -f k8s/bot.yaml
             kubectl apply -f k8s/ingress.yaml
 
-            echo "===== UPDATE IMAGES ====="
-
+            echo "===== UPDATE BACKEND ====="
             kubectl set image deployment/avgexchange-backend \
-              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.event.workflow_run.head_sha }} \
+              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${SHA} \
               -n avgexchange
 
+            echo "===== UPDATE FRONTEND ====="
             kubectl set image deployment/avgexchange-frontend \
-              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.event.workflow_run.head_sha }} \
+              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${SHA} \
               -n avgexchange
 
+            echo "===== UPDATE BOT ====="
             kubectl set image deployment/avgexchange-bot \
-              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.event.workflow_run.head_sha }} \
+              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${SHA} \
               -n avgexchange
 
-            echo "===== WAIT FOR ROLLOUT ====="
-
+            echo "===== WAIT BACKEND ====="
             kubectl rollout status deployment/avgexchange-backend \
               -n avgexchange \
-              --timeout=300s
+              --timeout=90s
 
+            echo "===== WAIT FRONTEND ====="
             kubectl rollout status deployment/avgexchange-frontend \
               -n avgexchange \
-              --timeout=300s
+              --timeout=60s
 
+            echo "===== WAIT BOT ====="
             kubectl rollout status deployment/avgexchange-bot \
               -n avgexchange \
-              --timeout=300s
+              --timeout=60s
 
-            echo "===== PODS ====="
+            echo "===== DEPLOYMENT STATUS ====="
+            kubectl get deployment -n avgexchange
+
+            echo "===== POD STATUS ====="
             kubectl get pods -n avgexchange -o wide
 
-            echo "===== SERVICES ====="
-            kubectl get svc -n avgexchange
-
-            echo "===== INGRESS ====="
-            kubectl get ingress -n avgexchange
-
             echo "========================================"
-            echo "Kubernetes Deployment Successful"
+            echo "DEPLOYMENT SUCCESSFUL"
             echo "========================================"
+
+      # ==========================================================
+      # SUCCESS EMAIL
+      # ==========================================================
 
       - name: Send Success Email
         if: success()
@@ -104,12 +111,13 @@ jobs:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           secure: true
+
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
 
           from: ${{ secrets.SMTP_USERNAME }}
 
-          subject: "✅ Avg Exchange Kubernetes Deployment Successful"
+          subject: "✅ Avg Exchange Deployment Successful"
 
           to: |
             Sanjayvanan03@gmail.com,
@@ -117,9 +125,16 @@ jobs:
             deepakavgprimetech@gmail.com
 
           html_body: |
-            <h2>✅ Avg Exchange Kubernetes Deployment Successful</h2>
+            <html>
+            <body>
 
-            <table border="1" cellpadding="8" cellspacing="0"
+            <h2 style="color:green;">
+              ✅ Avg Exchange Deployment Successful
+            </h2>
+
+            <table border="1"
+                   cellpadding="8"
+                   cellspacing="0"
                    style="border-collapse:collapse;">
 
               <tr>
@@ -135,6 +150,11 @@ jobs:
               <tr>
                 <td><b>Commit</b></td>
                 <td>${{ github.event.workflow_run.head_sha }}</td>
+              </tr>
+
+              <tr>
+                <td><b>Platform</b></td>
+                <td>ARM64</td>
               </tr>
 
               <tr>
@@ -159,6 +179,20 @@ jobs:
 
             </table>
 
+            <br>
+
+            <p>
+              The latest Avg Exchange images were successfully deployed
+              to the Kubernetes cluster.
+            </p>
+
+            </body>
+            </html>
+
+      # ==========================================================
+      # FAILURE EMAIL
+      # ==========================================================
+
       - name: Send Failure Email
         if: failure()
         uses: dawidd6/action-send-mail@v3
@@ -166,12 +200,13 @@ jobs:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           secure: true
+
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
 
           from: ${{ secrets.SMTP_USERNAME }}
 
-          subject: "❌ Avg Exchange Kubernetes Deployment Failed"
+          subject: "❌ Avg Exchange Deployment Failed"
 
           to: |
             Sanjayvanan03@gmail.com,
@@ -179,9 +214,16 @@ jobs:
             deepakavgprimetech@gmail.com
 
           html_body: |
-            <h2>❌ Avg Exchange Kubernetes Deployment Failed</h2>
+            <html>
+            <body>
 
-            <table border="1" cellpadding="8" cellspacing="0"
+            <h2 style="color:red;">
+              ❌ Avg Exchange Deployment Failed
+            </h2>
+
+            <table border="1"
+                   cellpadding="8"
+                   cellspacing="0"
                    style="border-collapse:collapse;">
 
               <tr>
@@ -197,6 +239,11 @@ jobs:
               <tr>
                 <td><b>Commit</b></td>
                 <td>${{ github.event.workflow_run.head_sha }}</td>
+              </tr>
+
+              <tr>
+                <td><b>Platform</b></td>
+                <td>ARM64</td>
               </tr>
 
               <tr>
@@ -223,4 +270,10 @@ jobs:
 
             <br>
 
-            <b>Please check GitHub Actions deployment logs.</b>
+            <p>
+              Please check the GitHub Actions deployment logs
+              for the exact Kubernetes error.
+            </p>
+
+            </body>
+            </html>

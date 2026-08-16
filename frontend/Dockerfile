@@ -1,21 +1,18 @@
-# Build Stage
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm install
+RUN npm ci
 
 COPY . .
 
-# Production API URL
 ARG VITE_API_URL
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build
 
-# Production Stage
 FROM nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html

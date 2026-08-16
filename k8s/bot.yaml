@@ -3,32 +3,48 @@ kind: Deployment
 metadata:
   name: avgexchange-bot
   namespace: avgexchange
+
 spec:
   replicas: 1
+
+  strategy:
+    type: Recreate
+
+  progressDeadlineSeconds: 120
+
   selector:
     matchLabels:
       app: avgexchange-bot
+
   template:
     metadata:
       labels:
         app: avgexchange-bot
+
     spec:
       imagePullSecrets:
         - name: ghcr-secret
+
+      terminationGracePeriodSeconds: 10
+
       containers:
         - name: bot
           image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:latest
           imagePullPolicy: Always
+
           envFrom:
             - secretRef:
                 name: avgexchange-bot-secret
+
           env:
             - name: API_URL
               value: "http://avgexchange-backend:4010"
+
           resources:
             requests:
               cpu: 50m
               memory: 128Mi
+
             limits:
               cpu: 500m
               memory: 512Mi
