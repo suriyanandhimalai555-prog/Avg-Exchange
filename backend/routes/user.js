@@ -29,11 +29,6 @@ router.post('/verify-signup-otp',  authLimiter, otpVerifyLimiter, verifySignupOt
 router.post('/bot-login', authLimiter, async (req, res, next) => {
   const { email: botEmail, password, botSecret } = req.body;
   console.log("================================");
- console.log("Request Body:", req.body);
- console.log("botSecret:", JSON.stringify(botSecret));
- console.log("config.botSecret:", JSON.stringify(config.botSecret));
- console.log("provided length:", String(botSecret || "").length);
- console.log("expected length:", String(config.botSecret || "").length);
  	console.log("================================");
 
   if (!config.botSecret) {
