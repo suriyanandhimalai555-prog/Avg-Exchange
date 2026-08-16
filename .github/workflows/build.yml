@@ -19,6 +19,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
@@ -31,6 +39,7 @@ jobs:
         with:
           context: ./backend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.sha }}
@@ -40,6 +49,7 @@ jobs:
         with:
           context: ./frontend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:latest
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.sha }}
@@ -49,6 +59,7 @@ jobs:
         with:
           context: ./bot
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:latest
             ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.sha }}
@@ -58,11 +69,14 @@ jobs:
           echo "======================================"
           echo "GHCR Images"
           echo "======================================"
+
           echo "Backend:"
           echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:${{ github.sha }}"
+
           echo
           echo "Frontend:"
           echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:${{ github.sha }}"
+
           echo
           echo "Bot:"
           echo "ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:${{ github.sha }}"
