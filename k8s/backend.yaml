@@ -32,7 +32,7 @@ spec:
 
       containers:
         - name: backend
-          image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:3de0f1d9e83123b5064381e18c2f814ddf416732
+          image: ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest
           imagePullPolicy: Always
 
           ports:
