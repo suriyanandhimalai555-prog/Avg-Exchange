@@ -79,7 +79,7 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (!user?.id) return;
-    const socket = io(API_URL, { withCredentials: true });
+    const socket = io(API_URL, { withCredentials: true, transports: ['websocket'], reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000, reconnectionDelayMax: 5000 });
     socket.on('connect', () => socket.emit('subscribe', { userId: user.id }));
     socket.on('balance_update', () => { fetchData(); dispatch(fetchNavbarBalance()); });
     socket.on('binance:ticker', (data) => { if (data?.symbol) pendingRef.current[data.symbol] = data; });

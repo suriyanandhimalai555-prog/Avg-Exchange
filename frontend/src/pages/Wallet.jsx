@@ -88,7 +88,7 @@ const Wallet = () => {
   // Real-time balance + order updates via socket
   useEffect(() => {
     if (!user?.id) return;
-    const socket = io(API_URL, { withCredentials: true });
+    const socket = io(API_URL, { withCredentials: true, transports: ['websocket'], reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000, reconnectionDelayMax: 5000 });
 
     socket.on('connect', () => {
       socket.emit('subscribe', { userId: user.id });

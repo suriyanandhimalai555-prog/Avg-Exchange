@@ -81,7 +81,7 @@ const useAdminSocket = (callback, throttleMs = 3000) => {
   cbRef.current = callback;
 
   useEffect(() => {
-    const socket = io(API_URL, { withCredentials: true });
+    const socket = io(API_URL, { withCredentials: true, transports: ['websocket'], reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000, reconnectionDelayMax: 5000 });
     socket.on(ADMIN_REFRESH, () => {
       const now = Date.now();
       if (now - lastFired.current < throttleMs) return;
