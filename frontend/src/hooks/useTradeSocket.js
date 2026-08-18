@@ -54,7 +54,14 @@ const useTradeSocket = ({
 
   useEffect(() => {
     isFirstRef.current = true;
-    const socket = io(API_URL, { withCredentials: true });
+    const socket = io(API_URL, {
+      withCredentials: true,
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+    });
     socketRef.current = socket;
 
     socket.on('connect', () => {
