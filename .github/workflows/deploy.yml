@@ -410,12 +410,6 @@ jobs:
                 <td><b>Namespace</b></td>
                 <td>avgexchange</td>
               </tr>
-
-              <tr>
-                <td><b>Domain</b></td>
-                <td>avgexchange.io</td>
-              </tr>
-
               <tr>
                 <td><b>Status</b></td>
                 <td>Deployment Successful ✅</td>
@@ -499,12 +493,6 @@ jobs:
                 <td><b>Namespace</b></td>
                 <td>avgexchange</td>
               </tr>
-
-              <tr>
-                <td><b>Domain</b></td>
-                <td>avgexchange.io</td>
-              </tr>
-
               <tr>
                 <td><b>Status</b></td>
                 <td>Deployment Failed ❌</td>
