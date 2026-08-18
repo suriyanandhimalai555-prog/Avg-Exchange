@@ -69,6 +69,34 @@ const CMC_TO_GECKO_ID = {
   TON:  'the-open-network',
 };
 
+/*
+ * Coin images.
+ *
+ * CoinMarketCap listing responses do not provide the image URL
+ * used by the frontend, so we provide a stable image mapping here.
+ *
+ * This matches the image sources previously used by the frontend.
+ */
+const COIN_IMAGES = {
+  BTC:  'https://assets.coingecko.com/coins/images/1/large/bitcoin.png',
+  ETH:  'https://assets.coingecko.com/coins/images/279/large/ethereum.png',
+  USDT: 'https://assets.coingecko.com/coins/images/325/large/tether.png',
+  BNB:  'https://assets.coingecko.com/coins/images/825/large/binance-coin-logo.png',
+  SOL:  'https://assets.coingecko.com/coins/images/4128/large/solana.png',
+  XRP:  'https://assets.coingecko.com/coins/images/44/large/xrp-symbol-white-128.png',
+  USDC: 'https://assets.coingecko.com/coins/images/6319/large/USD_Coin_icon.png',
+  ADA:  'https://assets.coingecko.com/coins/images/975/large/cardano.png',
+  AVAX: 'https://assets.coingecko.com/coins/images/12559/large/Avalanche_Circle_RedWhite_Trans.png',
+  DOGE: 'https://assets.coingecko.com/coins/images/5/large/dogecoin.png',
+  DOT:  'https://assets.coingecko.com/coins/images/12171/large/polkadot.png',
+  LINK: 'https://assets.coingecko.com/coins/images/877/large/chainlink-new-logo.png',
+  MATIC:'https://assets.coingecko.com/coins/images/4713/large/matic-token-icon.png',
+  LTC:  'https://assets.coingecko.com/coins/images/2/large/litecoin.png',
+  UNI:  'https://assets.coingecko.com/coins/images/12504/large/uniswap-uni.png',
+  ATOM: 'https://assets.coingecko.com/coins/images/1481/large/cosmos_hub.png',
+  TRX:  'https://assets.coingecko.com/coins/images/1094/large/tron.png',
+};
+
 function normalizeCoin(coin) {
   const symbol = String(coin.symbol || '').toUpperCase();
 
@@ -76,9 +104,16 @@ function normalizeCoin(coin) {
 
   return {
     id: CMC_TO_GECKO_ID[symbol] || String(coin.slug || '').toLowerCase(),
+
     symbol: symbol.toLowerCase(),
+
     name: coin.name,
-    image: null,
+
+    /*
+     * CMC does not provide the frontend image field we previously used.
+     * Use our stable symbol-based mapping instead.
+     */
+    image: COIN_IMAGES[symbol] || null,
 
     current_price: Number(quote.price || 0),
 
@@ -96,6 +131,7 @@ function normalizeCoin(coin) {
       Number(quote.volume_24h || 0),
 
     high_24h: null,
+
     low_24h: null,
 
     price_change_24h:
@@ -122,11 +158,15 @@ function normalizeCoin(coin) {
 
 /*
  * GET /api/markets/pairs
+ *
+ * Returns ONLY the actual exchange trading pairs.
  */
 router.get('/pairs', (_req, res) => {
   res.json({
     quote: QUOTE_CURRENCY,
+
     symbols: SYMBOLS,
+
     pairs: SYMBOLS.map(
       symbol => `${symbol}/${QUOTE_CURRENCY}`
     ),
