@@ -296,3 +296,5 @@ server.listen(config.port, '0.0.0.0', () => {
     );
   });
 });
+
+// Deployment verification: zero-downtime rollout test
