@@ -1,360 +1,523 @@
 name: Deploy Avg Exchange Kubernetes
 
 on:
-workflow_run:
-workflows:
-- Build and Push Avg Exchange Images
-types:
-- completed
-branches:
-- main
+  workflow_run:
+    workflows:
+      - Build and Push Avg Exchange Images
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
-contents: read
+  contents: read
 
 concurrency:
-group: avgexchange-production-deploy
-cancel-in-progress: false
+  group: avgexchange-production-deploy
+  cancel-in-progress: false
 
 jobs:
-deploy:
-if: ${{ github.event.workflow_run.conclusion == 'success' }}
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
-```
-name: Deploy to Kubernetes
-runs-on: ubuntu-latest
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
 
-steps:
-  - name: Deploy to Kubernetes
-    uses: appleboy/ssh-action@v1.2.2
-    with:
-      host: ${{ secrets.VPS_HOST }}
-      username: ${{ secrets.VPS_USER }}
-      key: ${{ secrets.VPS_SSH_KEY }}
-      port: 22
-      timeout: 30s
-      command_timeout: 360s
+    steps:
 
-      script: |
-        set -e
+      # ==========================================================
+      # DEPLOY TO KUBERNETES
+      # ==========================================================
 
-        cd /home/ubuntu/Applications/Avg-Exchange
+      - name: Deploy to Kubernetes
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
 
-        SHA="${{ github.event.workflow_run.head_sha }}"
+          timeout: 30s
+          command_timeout: 360s
 
-        echo "========================================"
-        echo "AVG EXCHANGE KUBERNETES DEPLOYMENT"
-        echo "Commit: $SHA"
-        echo "========================================"
+          script: |
+            set -e
 
-        git fetch origin main --quiet
-        git reset --hard origin/main --quiet
+            echo "========================================"
+            echo "AVG EXCHANGE KUBERNETES DEPLOYMENT"
+            echo "========================================"
 
-        kubectl get namespace avgexchange
+            cd /home/ubuntu/Applications/Avg-Exchange
 
-        echo "===== CURRENT DEPLOYMENTS ====="
-        kubectl get deployment -n avgexchange -o wide
+            SHA="${{ github.event.workflow_run.head_sha }}"
 
-        echo "===== UPDATING BACKEND ====="
+            echo "Commit: $SHA"
 
-        kubectl set image deployment/avgexchange-backend \
-          backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:$SHA \
-          -n avgexchange
+            # ==================================================
+            # UPDATE VPS REPOSITORY
+            # ==================================================
 
-        if ! kubectl rollout status deployment/avgexchange-backend \
-          -n avgexchange \
-          --timeout=180s; then
+            echo "===== GIT ====="
 
-          echo "BACKEND ROLLOUT FAILED"
-          echo "ROLLING BACK BACKEND"
+            git fetch origin main --quiet
+            git reset --hard origin/main --quiet
 
-          kubectl rollout undo deployment/avgexchange-backend \
-            -n avgexchange
+            # ==================================================
+            # VERIFY KUBERNETES
+            # ==================================================
 
-          kubectl rollout status deployment/avgexchange-backend \
-            -n avgexchange \
-            --timeout=180s || true
+            echo "===== VERIFY KUBERNETES ====="
 
-          exit 1
-        fi
+            kubectl get namespace avgexchange
 
-        echo "===== BACKEND HEALTH CHECK ====="
+            # ==================================================
+            # SHOW CURRENT IMAGES
+            # ==================================================
 
-        BACKEND_HEALTH_OK=false
+            echo "===== CURRENT DEPLOYMENTS ====="
 
-        for i in $(seq 1 10); do
-          if curl -fsS \
-            --connect-timeout 5 \
-            --max-time 10 \
-            https://api.avgexchange.io/health; then
+            kubectl get deployment \
+              -n avgexchange \
+              -o wide
+
+            # ==================================================
+            # UPDATE BACKEND
+            # ==================================================
+
+            echo "========================================"
+            echo "UPDATING BACKEND"
+            echo "========================================"
+
+            kubectl set image deployment/avgexchange-backend \
+              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:$SHA \
+              -n avgexchange
+
+            echo "===== WAITING FOR BACKEND ====="
+
+            if ! kubectl rollout status deployment/avgexchange-backend \
+              -n avgexchange \
+              --timeout=180s; then
+
+              echo "BACKEND ROLLOUT FAILED"
+              echo "ROLLING BACK BACKEND"
+
+              kubectl rollout undo deployment/avgexchange-backend \
+                -n avgexchange
+
+              kubectl rollout status deployment/avgexchange-backend \
+                -n avgexchange \
+                --timeout=180s || true
+
+              exit 1
+            fi
+
+            echo "===== BACKEND STATUS ====="
+
+            kubectl get deployment avgexchange-backend \
+              -n avgexchange
+
+            kubectl get pods \
+              -n avgexchange \
+              -l app=avgexchange-backend \
+              -o wide
+
+            # ==================================================
+            # BACKEND HEALTH
+            # ==================================================
+
+            echo "========================================"
+            echo "BACKEND HEALTH CHECK"
+            echo "========================================"
+
+            BACKEND_HEALTH_OK=false
+
+            for i in $(seq 1 10); do
+
+              if curl -fsS \
+                --connect-timeout 5 \
+                --max-time 10 \
+                https://api.avgexchange.io/health; then
+
+                echo
+                echo "Backend health check PASSED"
+                BACKEND_HEALTH_OK=true
+                break
+
+              fi
+
+              echo "Backend health check attempt $i failed"
+              echo "Retrying in 5 seconds..."
+
+              sleep 5
+            done
+
+            if [ "$BACKEND_HEALTH_OK" != "true" ]; then
+
+              echo "Backend public health check FAILED"
+              echo "ROLLING BACK BACKEND"
+
+              kubectl rollout undo deployment/avgexchange-backend \
+                -n avgexchange
+
+              kubectl rollout status deployment/avgexchange-backend \
+                -n avgexchange \
+                --timeout=180s || true
+
+              exit 1
+            fi
+
+            # ==================================================
+            # UPDATE FRONTEND
+            # ==================================================
+
+            echo "========================================"
+            echo "UPDATING FRONTEND"
+            echo "========================================"
+
+            kubectl set image deployment/avgexchange-frontend \
+              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:$SHA \
+              -n avgexchange
+
+            echo "===== WAITING FOR FRONTEND ====="
+
+            if ! kubectl rollout status deployment/avgexchange-frontend \
+              -n avgexchange \
+              --timeout=120s; then
+
+              echo "FRONTEND ROLLOUT FAILED"
+              echo "ROLLING BACK FRONTEND"
+
+              kubectl rollout undo deployment/avgexchange-frontend \
+                -n avgexchange
+
+              kubectl rollout status deployment/avgexchange-frontend \
+                -n avgexchange \
+                --timeout=120s || true
+
+              exit 1
+            fi
+
+            echo "===== FRONTEND STATUS ====="
+
+            kubectl get deployment avgexchange-frontend \
+              -n avgexchange
+
+            kubectl get pods \
+              -n avgexchange \
+              -l app=avgexchange-frontend \
+              -o wide
+
+            # ==================================================
+            # FRONTEND HEALTH
+            # ==================================================
+
+            echo "========================================"
+            echo "FRONTEND HEALTH CHECK"
+            echo "========================================"
+
+            FRONTEND_HEALTH_OK=false
+
+            for i in $(seq 1 10); do
+
+              if curl -fsSI \
+                --connect-timeout 5 \
+                --max-time 10 \
+                https://avgexchange.io/; then
+
+                echo
+                echo "Frontend health check PASSED"
+                FRONTEND_HEALTH_OK=true
+                break
+
+              fi
+
+              echo "Frontend health check attempt $i failed"
+              echo "Retrying in 5 seconds..."
+
+              sleep 5
+            done
+
+            if [ "$FRONTEND_HEALTH_OK" != "true" ]; then
+
+              echo "Frontend public health check FAILED"
+              echo "ROLLING BACK FRONTEND"
+
+              kubectl rollout undo deployment/avgexchange-frontend \
+                -n avgexchange
+
+              kubectl rollout status deployment/avgexchange-frontend \
+                -n avgexchange \
+                --timeout=120s || true
+
+              exit 1
+            fi
+
+            # ==================================================
+            # UPDATE BOT
+            # ==================================================
+
+            echo "========================================"
+            echo "UPDATING BOT"
+            echo "========================================"
+
+            kubectl set image deployment/avgexchange-bot \
+              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:$SHA \
+              -n avgexchange
+
+            echo "===== WAITING FOR BOT ====="
+
+            if ! kubectl rollout status deployment/avgexchange-bot \
+              -n avgexchange \
+              --timeout=120s; then
+
+              echo "BOT ROLLOUT FAILED"
+              echo "ROLLING BACK BOT"
+
+              kubectl rollout undo deployment/avgexchange-bot \
+                -n avgexchange
+
+              kubectl rollout status deployment/avgexchange-bot \
+                -n avgexchange \
+                --timeout=120s || true
+
+              exit 1
+            fi
+
+            echo "===== BOT STATUS ====="
+
+            kubectl get deployment avgexchange-bot \
+              -n avgexchange
+
+            kubectl get pods \
+              -n avgexchange \
+              -l app=avgexchange-bot \
+              -o wide
+
+            # ==================================================
+            # FINAL HEALTH CHECK
+            # ==================================================
+
+            echo "========================================"
+            echo "FINAL HEALTH CHECK"
+            echo "========================================"
+
+            curl -fsS \
+              --connect-timeout 5 \
+              --max-time 10 \
+              https://api.avgexchange.io/health
 
             echo
-            BACKEND_HEALTH_OK=true
-            break
-          fi
 
-          echo "Backend health check attempt $i failed"
-          sleep 5
-        done
+            curl -fsSI \
+              --connect-timeout 5 \
+              --max-time 10 \
+              https://avgexchange.io/
 
-        if [ "$BACKEND_HEALTH_OK" != "true" ]; then
+            # ==================================================
+            # FINAL STATUS
+            # ==================================================
 
-          echo "BACKEND HEALTH CHECK FAILED"
-          echo "ROLLING BACK BACKEND"
+            echo "========================================"
+            echo "FINAL DEPLOYMENT STATUS"
+            echo "========================================"
+
+            kubectl get deployment \
+              -n avgexchange
 
-          kubectl rollout undo deployment/avgexchange-backend \
-            -n avgexchange
+            echo "===== POD STATUS ====="
 
-          kubectl rollout status deployment/avgexchange-backend \
-            -n avgexchange \
-            --timeout=180s || true
+            kubectl get pods \
+              -n avgexchange \
+              -o wide
 
-          exit 1
-        fi
+            echo "===== SERVICES ====="
 
-        echo "===== UPDATING FRONTEND ====="
+            kubectl get svc \
+              -n avgexchange
 
-        kubectl set image deployment/avgexchange-frontend \
-          frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:$SHA \
-          -n avgexchange
+            echo "===== INGRESS ====="
 
-        if ! kubectl rollout status deployment/avgexchange-frontend \
-          -n avgexchange \
-          --timeout=120s; then
+            kubectl get ingress \
+              -n avgexchange
 
-          echo "FRONTEND ROLLOUT FAILED"
-          echo "ROLLING BACK FRONTEND"
+            echo "========================================"
+            echo "DEPLOYMENT SUCCESSFUL"
+            echo "========================================"
 
-          kubectl rollout undo deployment/avgexchange-frontend \
-            -n avgexchange
+      # ==========================================================
+      # SUCCESS EMAIL
+      # ==========================================================
 
-          kubectl rollout status deployment/avgexchange-frontend \
-            -n avgexchange \
-            --timeout=120s || true
+      - name: Send Success Email
+        if: success()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: true
 
-          exit 1
-        fi
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
 
-        echo "===== FRONTEND HEALTH CHECK ====="
+          from: ${{ secrets.SMTP_USERNAME }}
 
-        FRONTEND_HEALTH_OK=false
+          subject: "✅ Avg Exchange Deployment Successful"
 
-        for i in $(seq 1 10); do
-          if curl -fsSI \
-            --connect-timeout 5 \
-            --max-time 10 \
-            https://avgexchange.io/; then
+          to: |
+            Sanjayvanan03@gmail.com,
+            muthukdm45@gmail.com,
+            deepakavgprimetech@gmail.com
 
-            echo
-            FRONTEND_HEALTH_OK=true
-            break
-          fi
+          html_body: |
+            <html>
+            <body>
 
-          echo "Frontend health check attempt $i failed"
-          sleep 5
-        done
+            <h2 style="color:green;">
+              ✅ Avg Exchange Deployment Successful
+            </h2>
 
-        if [ "$FRONTEND_HEALTH_OK" != "true" ]; then
+            <table border="1"
+                   cellpadding="8"
+                   cellspacing="0"
+                   style="border-collapse:collapse;">
 
-          echo "FRONTEND HEALTH CHECK FAILED"
-          echo "ROLLING BACK FRONTEND"
+              <tr>
+                <td><b>Repository</b></td>
+                <td>${{ github.event.workflow_run.repository.full_name }}</td>
+              </tr>
 
-          kubectl rollout undo deployment/avgexchange-frontend \
-            -n avgexchange
+              <tr>
+                <td><b>Branch</b></td>
+                <td>main</td>
+              </tr>
 
-          kubectl rollout status deployment/avgexchange-frontend \
-            -n avgexchange \
-            --timeout=120s || true
+              <tr>
+                <td><b>Commit</b></td>
+                <td>${{ github.event.workflow_run.head_sha }}</td>
+              </tr>
 
-          exit 1
-        fi
-
-        echo "===== UPDATING BOT ====="
-
-        kubectl set image deployment/avgexchange-bot \
-          bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:$SHA \
-          -n avgexchange
-
-        if ! kubectl rollout status deployment/avgexchange-bot \
-          -n avgexchange \
-          --timeout=120s; then
-
-          echo "BOT ROLLOUT FAILED"
-          echo "ROLLING BACK BOT"
-
-          kubectl rollout undo deployment/avgexchange-bot \
-            -n avgexchange
-
-          kubectl rollout status deployment/avgexchange-bot \
-            -n avgexchange \
-            --timeout=120s || true
-
-          exit 1
-        fi
-
-        echo "===== FINAL HEALTH CHECK ====="
-
-        curl -fsS \
-          --connect-timeout 5 \
-          --max-time 10 \
-          https://api.avgexchange.io/health
-
-        echo
-
-        curl -fsSI \
-          --connect-timeout 5 \
-          --max-time 10 \
-          https://avgexchange.io/
-
-        echo "===== DEPLOYMENT STATUS ====="
-
-        kubectl get deployment -n avgexchange
-        kubectl get pods -n avgexchange -o wide
-        kubectl get svc -n avgexchange
-        kubectl get ingress -n avgexchange
-
-        echo "========================================"
-        echo "AVG EXCHANGE DEPLOYMENT SUCCESSFUL"
-        echo "========================================"
-
-  - name: Send Success Email
-    if: success()
-    uses: dawidd6/action-send-mail@v3
-    with:
-      server_address: ${{ secrets.SMTP_SERVER }}
-      server_port: ${{ secrets.SMTP_PORT }}
-      secure: true
-      username: ${{ secrets.SMTP_USERNAME }}
-      password: ${{ secrets.SMTP_PASSWORD }}
-      from: ${{ secrets.SMTP_USERNAME }}
-
-      subject: "✅ Avg Exchange Kubernetes Deployment Successful"
-
-      to: |
-        Sanjayvanan03@gmail.com,
-        muthukdm45@gmail.com,
-        deepakavgprimetech@gmail.com
-
-      html_body: |
-        <html>
-        <body>
-
-        <h2>✅ Avg Exchange Kubernetes Deployment Successful</h2>
-
-        <ul>
-          <li>✅ Docker images built</li>
-          <li>✅ Images pushed to GHCR</li>
-          <li>✅ Kubernetes manifests/deployments updated</li>
-          <li>✅ Kubernetes rolling update completed</li>
-          <li>✅ Backend rollout verified</li>
-          <li>✅ Frontend rollout verified</li>
-          <li>✅ Bot rollout verified</li>
-          <li>✅ Backend health check passed</li>
-          <li>✅ Frontend health check passed</li>
-          <li>✅ Final health checks passed</li>
-          <li>✅ Zero-downtime rolling deployment verified</li>
-          <li>✅ Deployment successful</li>
-        </ul>
-
-        <p>
-          <strong>Repository:</strong>
-          ${{ github.event.workflow_run.repository.full_name }}
-        </p>
-
-        <p>
-          <strong>Branch:</strong>
-          main
-        </p>
-
-        <p>
-          <strong>Image Tag:</strong>
-          ${{ github.event.workflow_run.head_sha }}
-        </p>
-
-        <p>
-          <strong>Platform:</strong>
-          ARM64
-        </p>
-
-        <p>
-          <strong>Deployment:</strong>
-          Kubernetes / k3s
-        </p>
-
-        <p>
-          <strong>Namespace:</strong>
-          avgexchange
-        </p>
-
-        <p>
-          <strong>Domain:</strong>
-          avgexchange.io
-        </p>
-
-        </body>
-        </html>
-
-  - name: Send Failure Email
-    if: failure()
-    uses: dawidd6/action-send-mail@v3
-    with:
-      server_address: ${{ secrets.SMTP_SERVER }}
-      server_port: ${{ secrets.SMTP_PORT }}
-      secure: true
-      username: ${{ secrets.SMTP_USERNAME }}
-      password: ${{ secrets.SMTP_PASSWORD }}
-      from: ${{ secrets.SMTP_USERNAME }}
-
-      subject: "❌ Avg Exchange Kubernetes Deployment Failed"
-
-      to: |
-        Sanjayvanan03@gmail.com,
-        muthukdm45@gmail.com,
-        deepakavgprimetech@gmail.com
-
-      html_body: |
-        <html>
-        <body>
-
-        <h2>❌ Avg Exchange Kubernetes Deployment Failed</h2>
-
-        <ul>
-          <li>❌ Kubernetes deployment failed</li>
-          <li>❌ Rollout or health verification failed</li>
-          <li>🔄 Automatic rollback was attempted</li>
-          <li>📄 Check GitHub Actions logs</li>
-        </ul>
-
-        <p>
-          <strong>Repository:</strong>
-          ${{ github.event.workflow_run.repository.full_name }}
-        </p>
-
-        <p>
-          <strong>Branch:</strong>
-          main
-        </p>
-
-        <p>
-          <strong>Image Tag:</strong>
-          ${{ github.event.workflow_run.head_sha }}
-        </p>
-
-        <p>
-          <strong>Platform:</strong>
-          ARM64
-        </p>
-
-        <p>
-          <strong>Deployment:</strong>
-          Kubernetes / k3s
-        </p>
-
-        <p>
-          <strong>Namespace:</strong>
-          avgexchange
-        </p>
-
-        </body>
-        </html>
-```
+              <tr>
+                <td><b>Platform</b></td>
+                <td>ARM64</td>
+              </tr>
+
+              <tr>
+                <td><b>Deployment</b></td>
+                <td>Kubernetes / k3s</td>
+              </tr>
+
+              <tr>
+                <td><b>Namespace</b></td>
+                <td>avgexchange</td>
+              </tr>
+
+              <tr>
+                <td><b>Domain</b></td>
+                <td>avgexchange.io</td>
+              </tr>
+
+              <tr>
+                <td><b>Status</b></td>
+                <td>Deployment Successful ✅</td>
+              </tr>
+
+            </table>
+
+            <br>
+
+            <p>
+              The latest Avg Exchange images were successfully deployed
+              to the Kubernetes cluster.
+            </p>
+
+            </body>
+            </html>
+
+      # ==========================================================
+      # FAILURE EMAIL
+      # ==========================================================
+
+      - name: Send Failure Email
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: true
+
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+
+          from: ${{ secrets.SMTP_USERNAME }}
+
+          subject: "❌ Avg Exchange Deployment Failed"
+
+          to: |
+            Sanjayvanan03@gmail.com,
+            muthukdm45@gmail.com,
+            deepakavgprimetech@gmail.com
+
+          html_body: |
+            <html>
+            <body>
+
+            <h2 style="color:red;">
+              ❌ Avg Exchange Deployment Failed
+            </h2>
+
+            <table border="1"
+                   cellpadding="8"
+                   cellspacing="0"
+                   style="border-collapse:collapse;">
+
+              <tr>
+                <td><b>Repository</b></td>
+                <td>${{ github.event.workflow_run.repository.full_name }}</td>
+              </tr>
+
+              <tr>
+                <td><b>Branch</b></td>
+                <td>main</td>
+              </tr>
+
+              <tr>
+                <td><b>Commit</b></td>
+                <td>${{ github.event.workflow_run.head_sha }}</td>
+              </tr>
+
+              <tr>
+                <td><b>Platform</b></td>
+                <td>ARM64</td>
+              </tr>
+
+              <tr>
+                <td><b>Deployment</b></td>
+                <td>Kubernetes / k3s</td>
+              </tr>
+
+              <tr>
+                <td><b>Namespace</b></td>
+                <td>avgexchange</td>
+              </tr>
+
+              <tr>
+                <td><b>Domain</b></td>
+                <td>avgexchange.io</td>
+              </tr>
+
+              <tr>
+                <td><b>Status</b></td>
+                <td>Deployment Failed ❌</td>
+              </tr>
+
+            </table>
+
+            <br>
+
+            <p>
+              Deployment failed. Kubernetes rollback was attempted
+              automatically for the failed component.
+            </p>
+
+            </body>
+            </html>
