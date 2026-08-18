@@ -190,7 +190,7 @@ const Navbar = () => {
                           <IoGridOutline size={18} /> Dashboard
                         </Link>
                         <Link to="/wallet/assets" className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
-                          <IoWalletOutline size={18} /> Asset
+                          <IoWalletOutline size={18} /> Assets
                         </Link>
                         <Link to={user?.isAdmin ? '/admin/orders' : '/wallet/orders'} className={s.dropdownItem} onClick={() => setIsDropdownOpen(false)}>
                           <IoListOutline size={18} /> Orders
