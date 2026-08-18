@@ -10,12 +10,14 @@
 
 'use strict';
 
-const express       = require('express');
-const axios         = require('axios');
-const config        = require('../config');
-const db            = require('../db');
+const express = require('express');
+const axios = require('axios');
+
+const config = require('../config');
+const db = require('../db');
 const binanceStream = require('../services/binanceStreamService');
-const ApiCache      = require('../utils/apiCache');
+const ApiCache = require('../utils/apiCache');
+
 const { SYMBOLS, QUOTE_CURRENCY } = require('../config/pairs');
 
 const router = express.Router();
@@ -25,95 +27,69 @@ const cache = new ApiCache(60_000);
 /*
  * CoinMarketCap IDs.
  *
- * These IDs are used to convert CMC response format into the
- * same format that the frontend/bot previously received from CoinGecko.
+ * Used only when converting the CMC response into the legacy
+ * CoinGecko-compatible "id" field expected by the frontend.
  */
-const CMC_IDS = {
-  bitcoin: 1,
-  ethereum: 1027,
-  tether: 825,
-  binancecoin: 1839,
-  solana: 5426,
-  ripple: 52,
-  cardano: 2010,
-  dogecoin: 74,
-  polkadot: 6636,
-  chainlink: 1975,
-  avalanche: 5805,
-  'avalanche-2': 5805,
-  'matic-network': 3890,
-  polygon: 3890,
-  'shiba-inu': 5994,
-  litecoin: 2,
-  uniswap: 7083,
-  cosmos: 3794,
-  'the-open-network': 11419,
-};
-
 const CMC_TO_GECKO_ID = {
-  BTC:  'bitcoin',
-  ETH:  'ethereum',
-  SOL:  'solana',
-  BNB:  'binancecoin',
-  XRP:  'ripple',
-  ADA:  'cardano',
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+  BNB: 'binancecoin',
+  XRP: 'ripple',
+  ADA: 'cardano',
   DOGE: 'dogecoin',
-  DOT:  'polkadot',
+  DOT: 'polkadot',
   LINK: 'chainlink',
   AVAX: 'avalanche-2',
-  MATIC:'matic-network',
+  MATIC: 'matic-network',
   SHIB: 'shiba-inu',
-  LTC:  'litecoin',
-  UNI:  'uniswap',
+  LTC: 'litecoin',
+  UNI: 'uniswap',
   ATOM: 'cosmos',
-  TON:  'the-open-network',
+  TON: 'the-open-network',
 };
 
 /*
- * Coin images.
+ * Convert a CoinMarketCap coin into the format currently expected
+ * by the frontend.
  *
- * CoinMarketCap listing responses do not provide the image URL
- * used by the frontend, so we provide a stable image mapping here.
+ * IMPORTANT:
+ * CMC provides the numeric coin ID in coin.id.
  *
- * This matches the image sources previously used by the frontend.
+ * Example:
+ *   Bitcoin -> 1
+ *   Ethereum -> 1027
+ *   XRP -> 52
+ *
+ * Therefore the image URL is generated directly from the CMC ID.
+ * This removes the need for a manually maintained image list.
  */
-const COIN_IMAGES = {
-  BTC:  'https://assets.coingecko.com/coins/images/1/large/bitcoin.png',
-  ETH:  'https://assets.coingecko.com/coins/images/279/large/ethereum.png',
-  USDT: 'https://assets.coingecko.com/coins/images/325/large/tether.png',
-  BNB:  'https://assets.coingecko.com/coins/images/825/large/binance-coin-logo.png',
-  SOL:  'https://assets.coingecko.com/coins/images/4128/large/solana.png',
-  XRP:  'https://assets.coingecko.com/coins/images/44/large/xrp-symbol-white-128.png',
-  USDC: 'https://assets.coingecko.com/coins/images/6319/large/USD_Coin_icon.png',
-  ADA:  'https://assets.coingecko.com/coins/images/975/large/cardano.png',
-  AVAX: 'https://assets.coingecko.com/coins/images/12559/large/Avalanche_Circle_RedWhite_Trans.png',
-  DOGE: 'https://assets.coingecko.com/coins/images/5/large/dogecoin.png',
-  DOT:  'https://assets.coingecko.com/coins/images/12171/large/polkadot.png',
-  LINK: 'https://assets.coingecko.com/coins/images/877/large/chainlink-new-logo.png',
-  MATIC:'https://assets.coingecko.com/coins/images/4713/large/matic-token-icon.png',
-  LTC:  'https://assets.coingecko.com/coins/images/2/large/litecoin.png',
-  UNI:  'https://assets.coingecko.com/coins/images/12504/large/uniswap-uni.png',
-  ATOM: 'https://assets.coingecko.com/coins/images/1481/large/cosmos_hub.png',
-  TRX:  'https://assets.coingecko.com/coins/images/1094/large/tron.png',
-};
-
 function normalizeCoin(coin) {
   const symbol = String(coin.symbol || '').toUpperCase();
 
   const quote = coin.quote?.USD || {};
 
   return {
-    id: CMC_TO_GECKO_ID[symbol] || String(coin.slug || '').toLowerCase(),
+    /*
+     * Keep the existing frontend-compatible ID behavior.
+     */
+    id:
+      CMC_TO_GECKO_ID[symbol] ||
+      String(coin.slug || '').toLowerCase(),
 
     symbol: symbol.toLowerCase(),
 
     name: coin.name,
 
     /*
-     * CMC does not provide the frontend image field we previously used.
-     * Use our stable symbol-based mapping instead.
+     * CoinMarketCap image.
+     *
+     * Example:
+     * https://s2.coinmarketcap.com/static/img/coins/64x64/1.png
      */
-    image: COIN_IMAGES[symbol] || null,
+    image: coin.id
+      ? `https://s2.coinmarketcap.com/static/img/coins/64x64/${coin.id}.png`
+      : null,
 
     current_price: Number(quote.price || 0),
 
@@ -130,6 +106,10 @@ function normalizeCoin(coin) {
     total_volume:
       Number(quote.volume_24h || 0),
 
+    /*
+     * CMC listings/latest does not provide the same high_24h /
+     * low_24h fields as the old CoinGecko response.
+     */
     high_24h: null,
 
     low_24h: null,
@@ -152,7 +132,9 @@ function normalizeCoin(coin) {
         : Number(coin.max_supply),
 
     last_updated:
-      quote.last_updated || coin.last_updated || null,
+      quote.last_updated ||
+      coin.last_updated ||
+      null,
   };
 }
 
@@ -176,12 +158,10 @@ router.get('/pairs', (_req, res) => {
 /*
  * GET /api/markets
  *
- * CoinMarketCap is the ONLY external provider used here.
+ * CoinMarketCap is the ONLY external market-data provider used here.
  *
  * Server-side cache:
  *   60 seconds
- *
- * This prevents every frontend/bot request from hitting CMC.
  */
 router.get('/', async (req, res) => {
   const {
@@ -191,8 +171,14 @@ router.get('/', async (req, res) => {
     order = 'market_cap_desc',
   } = req.query;
 
+  /*
+   * Keep the existing API contract.
+   */
   const limit = Math.min(
-    Math.max(parseInt(per_page, 10) || 15, 1),
+    Math.max(
+      parseInt(per_page, 10) || 15,
+      1
+    ),
     100
   );
 
@@ -208,7 +194,6 @@ router.get('/', async (req, res) => {
     const { data, cacheStatus } = await cache.wrap(
       key,
       async () => {
-
         if (!config.coinmarketcapApiKey) {
           throw new Error(
             'COINMARKETCAP_API is not configured'
@@ -219,8 +204,14 @@ router.get('/', async (req, res) => {
           'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest',
           {
             params: {
-              start: ((pageNumber - 1) * limit) + 1,
+              start:
+                ((pageNumber - 1) * limit) + 1,
+
               limit,
+
+              /*
+               * The frontend currently expects USD fields.
+               */
               convert: 'USD',
             },
 
@@ -248,12 +239,12 @@ router.get('/', async (req, res) => {
     res.set('X-Cache', cacheStatus);
 
     res.json(data);
-
   } catch (err) {
-
     console.error(
       '[markets] CoinMarketCap error:',
-      err.response?.status || err.code || err.message
+      err.response?.status ||
+        err.code ||
+        err.message
     );
 
     if (err.response?.data) {
@@ -276,12 +267,11 @@ router.get('/', async (req, res) => {
 /*
  * GET /api/markets/live
  *
- * Binance WebSocket.
+ * Binance WebSocket live tickers.
  *
  * This is independent from CoinMarketCap.
  */
 router.get('/live', (_req, res) => {
-
   const tickers =
     binanceStream.getAllTickers();
 
@@ -299,11 +289,11 @@ router.get('/live', (_req, res) => {
 
 /*
  * GET /api/markets/static-coin
+ *
+ * Returns the enabled static coin configuration.
  */
 router.get('/static-coin', async (_req, res) => {
-
   try {
-
     const { rows } = await db.query(`
       SELECT
         symbol,
@@ -317,9 +307,7 @@ router.get('/static-coin', async (_req, res) => {
     `);
 
     res.json(rows[0] || null);
-
   } catch (err) {
-
     console.error(
       '[markets] static coin error:',
       err.message
