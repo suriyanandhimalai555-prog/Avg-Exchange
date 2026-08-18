@@ -89,7 +89,7 @@ jobs:
             echo "========================================"
 
             kubectl set image deployment/avgexchange-backend \
-              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:latest \
+              backend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-backend:$SHA \
               -n avgexchange
 
             echo "===== WAITING FOR BACKEND ====="
@@ -175,7 +175,7 @@ jobs:
             echo "========================================"
 
             kubectl set image deployment/avgexchange-frontend \
-              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:latest \
+              frontend=ghcr.io/suriyanandhimalai555-prog/avg-exchange-frontend:$SHA \
               -n avgexchange
 
             echo "===== WAITING FOR FRONTEND ====="
@@ -261,7 +261,7 @@ jobs:
             echo "========================================"
 
             kubectl set image deployment/avgexchange-bot \
-              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:latest \
+              bot=ghcr.io/suriyanandhimalai555-prog/avg-exchange-bot:$SHA \
               -n avgexchange
 
             echo "===== WAITING FOR BOT ====="
