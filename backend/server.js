@@ -142,6 +142,16 @@ app.use('/api/payment',  paymentRoutes);
 app.use('/api/trending', marketRoutes);
 app.use('/api/cmc',      cmcRoutes);
 
+// ── Root endpoint ────────────────────────────────────────────────
+app.get('/', (_req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'avgexchange-backend',
+    message: 'AVG Exchange Backend API is running',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.use(errorHandler);
 
 // ── Health endpoint ──────────────────────────────────────────────
