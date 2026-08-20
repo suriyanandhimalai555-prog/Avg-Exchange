@@ -4,7 +4,7 @@ metadata:
   name: avgexchange-frontend
   namespace: avgexchange
 spec:
-  replicas: 2
+  replicas: 1
 
   strategy:
     type: RollingUpdate
