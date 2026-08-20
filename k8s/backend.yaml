@@ -3,6 +3,7 @@ kind: Deployment
 metadata:
   name: avgexchange-backend
   namespace: avgexchange
+
 spec:
   replicas: 1
 
@@ -10,10 +11,10 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
-      maxSurge: 1
+      maxSurge: 2
 
-  minReadySeconds: 10
-  progressDeadlineSeconds: 600
+  minReadySeconds: 5
+  progressDeadlineSeconds: 300
 
   selector:
     matchLabels:
@@ -47,14 +48,17 @@ spec:
           startupProbe:
             tcpSocket:
               port: 4010
-            initialDelaySeconds: 30
-            periodSeconds: 10
+            initialDelaySeconds: 10
+            periodSeconds: 5
             timeoutSeconds: 2
-            failureThreshold: 60
+            failureThreshold: 30
 
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: 4010
+              scheme: HTTP
+            initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 3
@@ -63,6 +67,7 @@ spec:
           livenessProbe:
             tcpSocket:
               port: 4010
+            initialDelaySeconds: 20
             periodSeconds: 20
             timeoutSeconds: 2
             failureThreshold: 3
