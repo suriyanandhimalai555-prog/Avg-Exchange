@@ -9,10 +9,10 @@ export default defineConfig({
   ],
   server: {
     proxy: {
-      // Proxy requests to YOUR backend (port 4000) instead of directly to CoinGecko
+      // Proxy requests to YOUR backend (port 4010) instead of directly to CoinGecko
       // This prevents CORS issues and uses your backend logic
       '/api': {
-        target: 'http://localhost:4000', 
+        target: 'http://localhost:4010',
         changeOrigin: true,
       },
     },

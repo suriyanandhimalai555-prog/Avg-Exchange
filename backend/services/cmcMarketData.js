@@ -16,6 +16,7 @@
 const db       = require('../db');
 const engine   = require('./engineService');
 const ApiCache = require('../utils/apiCache');
+const Decimal  = require('../utils/decimal');
 const { SYMBOLS, QUOTE_CURRENCY, DEPOSIT_NETWORKS } = require('../config/pairs');
 
 // Shared 60-second cache for the raw 24h aggregate + last-price queries.
@@ -312,9 +313,12 @@ function buildOrderBook(cmcPair, depthLimit = 50) {
   const internalPair = fromCmcPair(cmcPair);
   const raw = engine.getDepth(internalPair);
 
+  // Format via Decimal (toExpNeg: -28) so tiny values never come out in
+  // scientific notation (e.g. 6.97e-8) and float noise is trimmed to 8 dp —
+  // both of which CMC's order-book parser rejects.
   const mapLevel = (level) => [
-    level.price.toString(),
-    level.amount.toString(),
+    new Decimal(level.price).toDecimalPlaces(8).toString(),
+    new Decimal(level.amount).toDecimalPlaces(8).toString(),
   ];
 
   // timestamp is intentionally omitted here — the route injects Date.now() at

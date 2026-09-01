@@ -27,7 +27,7 @@ const requireEnv = (key) => {
 
 module.exports = {
   // ── Server ────────────────────────────────────────────────────
-  port:     parseInt(env('PORT', '4000'), 10),
+  port:     parseInt(env('PORT', '4010'), 10),
   nodeEnv:  env('NODE_ENV', 'development'),
   isProduction: env('NODE_ENV') === 'production',
 
@@ -73,7 +73,7 @@ module.exports = {
     callbackUrl: env('OXAPAY_CALLBACK_URL'),
     staticCallbackUrl: env('OXAPAY_STATIC_CALLBACK_URL'),
     returnUrl:   env('OXAPAY_RETURN_URL'),
-    appUrl:      env('APP_URL', 'http://localhost:4000'),
+    appUrl:      env('APP_URL', 'http://localhost:4010'),
     frontendUrl: env('FRONTEND_URL', 'http://localhost:5173'),
   },
 
