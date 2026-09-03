@@ -16,11 +16,14 @@ import Dashboard       from './pages/Dashboard';
 import Admin           from './pages/Admin';
 import AdminUserDetail from './pages/AdminUserDetail';
 import ForgotPassword  from './pages/ForgotPassword';
+import Terms           from './pages/Terms';
+import Privacy         from './pages/Privacy';
+import Fees            from './pages/Fees';
 import Navbar          from './components/Navbar';
 import Footer          from './components/Footer';
 import ScrollToTop     from './components/ScrollToTop';
 
-const FOOTER_PAGES = new Set(['/', '/markets', '/login', '/signup', '/forgot-password']);
+const FOOTER_PAGES = new Set(['/', '/markets', '/login', '/signup', '/forgot-password', '/terms', '/privacy', '/fees']);
 
 function AppShell() {
   const dispatch     = useDispatch();
@@ -50,6 +53,9 @@ function AppShell() {
           <Route path="/"        element={<Home />} />
           <Route path="/markets" element={<Markets />} />
           <Route path="/trade"   element={<Trade />} />
+          <Route path="/terms"   element={<Terms />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/fees"    element={<Fees />} />
 
           <Route path="/wallet"     element={<ProtectedRoute><Wallet /></ProtectedRoute>} />
           <Route path="/wallet/:tab" element={<ProtectedRoute><Wallet /></ProtectedRoute>} />

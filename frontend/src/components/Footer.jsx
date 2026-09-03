@@ -1,5 +1,6 @@
 // src/components/Footer.jsx
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { IoLogoTwitter, IoLogoDiscord, IoLogoGithub, IoLogoInstagram } from 'react-icons/io5';
 import { footerStyles as s } from './HomeStyles';
 
@@ -40,9 +41,10 @@ const Footer = () => {
             <h4 className={s.colTitle}>Support</h4>
             <div className={s.linkList}>
               <a href="#" className={s.link}>Help Center</a>
-              <a href="#" className={s.link}>Trading Fees</a>
-              <a href="#" className={s.link}>API Documentation</a>
               <a href="#" className={s.link}>Contact Us</a>
+              <Link to="/fees" className={s.link}>Fees</Link>
+              <Link to="/terms" className={s.link}>Terms of Service</Link>
+              <Link to="/privacy" className={s.link}>Privacy Policy</Link>
             </div>
           </div>
         </div>
