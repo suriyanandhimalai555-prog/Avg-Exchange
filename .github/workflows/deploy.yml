@@ -365,7 +365,6 @@ jobs:
 
           to: |
             Sanjayvanan03@gmail.com,
-            muthukdm45@gmail.com,
             devops@avgprimetech.com
 
           html_body: |
@@ -448,7 +447,6 @@ jobs:
 
           to: |
             Sanjayvanan03@gmail.com,
-            muthukdm45@gmail.com,
             devops@avgprimetech.com
 
           html_body: |
